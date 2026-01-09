@@ -15,7 +15,7 @@
 </script>
 
 <svelte:head>
-	<title>Conlanger - Construct Languages with Precision</title>
+	<title>Conlanger</title>
 	<meta name="description" content="The complete platform for creating constructed languages. Design phonologies, build lexicons, define grammars, and collaborate with others." />
 </svelte:head>
 
