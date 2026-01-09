@@ -1,16 +1,22 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
-	import { currentLanguage } from '$lib/stores';
+	import { currentLanguage, presence, activityLog } from '$lib/stores';
+	import { sessionId, getUserId, user, isAuthenticated } from '$lib/convex';
 	import { onMount, onDestroy } from 'svelte';
+	import PresenceBar from '$lib/components/PresenceBar.svelte';
+	import ActivityFeed from '$lib/components/ActivityFeed.svelte';
 	
 	interface Props {
 		children: Snippet;
 	}
 	
 	let { children }: Props = $props();
+	let showActivity = $state(false);
 	
 	const languageId = $derived($page.params.id);
+	const canEdit = $derived($currentLanguage?.access?.canWrite ?? false);
+	const isOwner = $derived($currentLanguage?.access?.isOwner ?? false);
 	
 	const navItems = $derived([
 		{ href: `/lang/${languageId}`, label: 'Overview', exact: true },
@@ -23,12 +29,20 @@
 		{ href: `/lang/${languageId}/tools`, label: 'Tools' }
 	]);
 	
-	onMount(() => {
-		currentLanguage.load(languageId);
+	onMount(async () => {
+		await currentLanguage.load(languageId);
+		
+		// Start presence tracking if authenticated
+		if ($isAuthenticated) {
+			presence.start(languageId, sessionId);
+			activityLog.start(languageId);
+		}
 	});
 	
 	onDestroy(() => {
 		currentLanguage.clear();
+		presence.stop(sessionId);
+		activityLog.stop();
 	});
 	
 	function isActive(href: string, exact?: boolean) {
@@ -40,9 +54,12 @@
 </script>
 
 <div class="language-layout">
+	<!-- Presence Bar for real-time collaboration -->
+	<PresenceBar presence={$presence} currentUserId={getUserId() ?? undefined} />
+	
 	<header class="language-header">
 		<div class="header-left">
-			<a href="/" class="back-link" aria-label="Back to language list">
+			<a href="/languages" class="back-link" aria-label="Back to language list">
 				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<polyline points="15 18 9 12 15 6"></polyline>
 				</svg>
@@ -53,10 +70,37 @@
 					{#if $currentLanguage.nativeName}
 						<span class="native-name">{$currentLanguage.nativeName}</span>
 					{/if}
+					{#if $currentLanguage.isPublic}
+						<span class="public-badge">Public</span>
+					{/if}
+					{#if !canEdit}
+						<span class="readonly-badge">View only</span>
+					{/if}
 				{:else}
 					<div class="skeleton" style="width: 120px; height: 24px;"></div>
 				{/if}
 			</div>
+		</div>
+		
+		<div class="header-right">
+			{#if $currentLanguage && isOwner}
+				<a href="/lang/{languageId}/settings" class="header-btn" title="Language Settings">
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<circle cx="12" cy="12" r="3"></circle>
+						<path d="M12 1v6m0 6v10M4.93 4.93l4.24 4.24m5.66 5.66l4.24 4.24M1 12h6m6 0h10M4.93 19.07l4.24-4.24m5.66-5.66l4.24-4.24"></path>
+					</svg>
+				</a>
+			{/if}
+			<button 
+				class="header-btn" 
+				class:active={showActivity}
+				onclick={() => showActivity = !showActivity}
+				title="Activity Log"
+			>
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+				</svg>
+			</button>
 		</div>
 	</header>
 	
@@ -72,16 +116,33 @@
 		{/each}
 	</nav>
 	
-	<main class="language-content">
-		{@render children()}
-	</main>
+	<div class="language-body">
+		<main class="language-content">
+			{@render children()}
+		</main>
+		
+		{#if showActivity}
+			<aside class="activity-sidebar">
+				<div class="sidebar-header">
+					<h2>Activity</h2>
+					<button class="close-btn" onclick={() => showActivity = false} aria-label="Close activity panel">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<line x1="18" y1="6" x2="6" y2="18"></line>
+							<line x1="6" y1="6" x2="18" y2="18"></line>
+						</svg>
+					</button>
+				</div>
+				<ActivityFeed activities={$activityLog} />
+			</aside>
+		{/if}
+	</div>
 </div>
 
 <style>
 	.language-layout {
 		display: flex;
 		flex-direction: column;
-		min-height: 100vh;
+		min-height: calc(100vh - 60px);
 	}
 	
 	.language-header {
@@ -97,6 +158,38 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-4);
+	}
+	
+	.header-right {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	
+	.header-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		border-radius: var(--radius-md);
+		background: transparent;
+		border: 1px solid var(--color-border);
+		color: var(--color-text-secondary);
+		cursor: pointer;
+		transition: all var(--transition-fast);
+		text-decoration: none;
+	}
+	
+	.header-btn:hover {
+		background: var(--color-bg-tertiary);
+		color: var(--color-text);
+	}
+	
+	.header-btn.active {
+		background: var(--color-accent-light);
+		border-color: var(--color-accent);
+		color: var(--color-accent);
 	}
 	
 	.back-link {
@@ -117,7 +210,7 @@
 	
 	.language-info {
 		display: flex;
-		align-items: baseline;
+		align-items: center;
 		gap: var(--space-3);
 	}
 	
@@ -129,6 +222,22 @@
 	.native-name {
 		font-size: var(--size-md);
 		color: var(--color-text-secondary);
+	}
+	
+	.public-badge, .readonly-badge {
+		font-size: var(--size-xs);
+		padding: var(--space-1) var(--space-2);
+		border-radius: var(--radius-sm);
+	}
+	
+	.public-badge {
+		background: var(--color-success-light);
+		color: var(--color-success);
+	}
+	
+	.readonly-badge {
+		background: var(--color-warning-light);
+		color: var(--color-warning);
 	}
 	
 	.skeleton {
@@ -166,6 +275,7 @@
 	
 	.nav-link:hover {
 		color: var(--color-text);
+		text-decoration: none;
 	}
 	
 	.nav-link.active {
@@ -173,15 +283,71 @@
 		border-bottom-color: var(--color-primary);
 	}
 	
+	.language-body {
+		display: flex;
+		flex: 1;
+	}
+	
 	.language-content {
 		flex: 1;
 		padding: var(--space-8) var(--space-6);
 		display: flex;
 		justify-content: center;
+		overflow-y: auto;
 	}
 	
 	.language-content > :global(*) {
 		width: 100%;
 		max-width: 1200px;
+	}
+	
+	.activity-sidebar {
+		width: 320px;
+		border-left: 1px solid var(--color-border);
+		background: var(--color-bg-secondary);
+		overflow-y: auto;
+		flex-shrink: 0;
+	}
+	
+	.sidebar-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: var(--space-4);
+		border-bottom: 1px solid var(--color-border);
+	}
+	
+	.sidebar-header h2 {
+		font-size: var(--size-md);
+		font-weight: 500;
+	}
+	
+	.close-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		background: transparent;
+		border: none;
+		border-radius: var(--radius-sm);
+		color: var(--color-text-secondary);
+		cursor: pointer;
+	}
+	
+	.close-btn:hover {
+		background: var(--color-bg-tertiary);
+		color: var(--color-text);
+	}
+	
+	@media (max-width: 768px) {
+		.activity-sidebar {
+			position: fixed;
+			top: 0;
+			right: 0;
+			bottom: 0;
+			z-index: var(--z-modal);
+			box-shadow: var(--shadow-lg);
+		}
 	}
 </style>

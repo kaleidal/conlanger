@@ -64,13 +64,15 @@
 	.checkbox-box {
 		width: 18px;
 		height: 18px;
+		min-width: 18px;
+		min-height: 18px;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-sm);
 		background: var(--color-bg);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		transition: all var(--transition-fast);
+		transition: background var(--transition-fast), border-color var(--transition-fast);
 		color: var(--color-text-inverse);
 	}
 	

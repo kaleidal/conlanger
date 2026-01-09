@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { onMount } from 'svelte';
 	import { Card, Button, Input, Modal, Badge, Textarea, HelpTooltip } from '$lib/components/ui';
-	import { currentLanguage } from '$lib/stores';
+	import { runQuery, runMutation, getUserId } from '$lib/convex';
 	
 	const languageId = $derived($page.params.id);
 	
+	let loading = $state(true);
 	let selectedTextId = $state<string | null>(null);
 	
 	let textModalOpen = $state(false);
@@ -40,7 +42,7 @@
 	}
 	
 	interface Text {
-		id: string;
+		_id: string;
 		title: string;
 		originalText?: string;
 		translatedText?: string;
@@ -51,10 +53,22 @@
 		updatedAt?: string;
 	}
 	
-	const texts = $derived(($currentLanguage?.texts ?? []) as Text[]);
-	const selectedText = $derived(texts.find(t => t.id === selectedTextId));
+	let texts = $state<Text[]>([]);
+	const selectedText = $derived(texts.find(t => t._id === selectedTextId));
 	
-	const words = $derived(($currentLanguage?.words ?? []) as { id: string; lemma: string; wordClass: string }[]);
+	async function loadData() {
+		loading = true;
+		try {
+			const data = await runQuery<Text[]>('texts:list', { languageId });
+			texts = data ?? [];
+		} finally {
+			loading = false;
+		}
+	}
+	
+	onMount(() => {
+		loadData();
+	});
 	
 	function openTextModal(text?: Text) {
 		if (text) {
@@ -83,31 +97,27 @@
 		saving = true;
 		try {
 			const payload = {
+				languageId,
+				userId: getUserId(),
 				title: textForm.title,
-				originalText: textForm.originalText || null,
-				translatedText: textForm.translatedText || null,
-				notes: textForm.notes || null,
-				source: textForm.source || null,
-				interlinearData: editingText?.interlinearData ?? null
+				originalText: textForm.originalText || undefined,
+				translatedText: textForm.translatedText || undefined,
+				notes: textForm.notes || undefined,
+				source: textForm.source || undefined,
+				interlinearData: editingText?.interlinearData ?? undefined
 			};
 			
 			if (editingText) {
-				await fetch(`/api/languages/${languageId}/texts/${editingText.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('texts:update', {
+					id: editingText._id,
+					...payload
 				});
 			} else {
-				const response = await fetch(`/api/languages/${languageId}/texts`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
-				});
-				const newText = await response.json();
-				selectedTextId = newText.id;
+				const newId = await runMutation<string>('texts:create', payload);
+				selectedTextId = newId;
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			textModalOpen = false;
 		} finally {
 			saving = false;
@@ -115,11 +125,14 @@
 	}
 	
 	async function deleteText(id: string) {
-		await fetch(`/api/languages/${languageId}/texts/${id}`, { method: 'DELETE' });
+		await runMutation('texts:remove', { 
+			id,
+			userId: getUserId()
+		});
 		if (selectedTextId === id) {
-			selectedTextId = texts.filter(t => t.id !== id)[0]?.id ?? null;
+			selectedTextId = texts.filter(t => t._id !== id)[0]?._id ?? null;
 		}
-		await currentLanguage.load(languageId);
+		await loadData();
 		deleteConfirmId = null;
 	}
 	
@@ -171,16 +184,19 @@
 				updatedData.push(newLine);
 			}
 			
-			await fetch(`/api/languages/${languageId}/texts/${selectedText.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					...selectedText,
-					interlinearData: updatedData
-				})
+			await runMutation('texts:update', {
+				id: selectedText._id,
+				languageId,
+				userId: getUserId(),
+				title: selectedText.title,
+				originalText: selectedText.originalText,
+				translatedText: selectedText.translatedText,
+				notes: selectedText.notes,
+				source: selectedText.source,
+				interlinearData: updatedData
 			});
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			interlinearModalOpen = false;
 		} finally {
 			saving = false;
@@ -192,16 +208,19 @@
 		
 		const updatedData = selectedText.interlinearData?.filter((_, i) => i !== index) ?? [];
 		
-		await fetch(`/api/languages/${languageId}/texts/${selectedText.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				...selectedText,
-				interlinearData: updatedData
-			})
+		await runMutation('texts:update', {
+			id: selectedText._id,
+			languageId,
+			userId: getUserId(),
+			title: selectedText.title,
+			originalText: selectedText.originalText,
+			translatedText: selectedText.translatedText,
+			notes: selectedText.notes,
+			source: selectedText.source,
+			interlinearData: updatedData
 		});
 		
-		await currentLanguage.load(languageId);
+		await loadData();
 	}
 	
 	function exportAsLatex(): string {
@@ -258,6 +277,11 @@
 	}
 </script>
 
+{#if loading}
+	<div class="loading-container">
+		<p>Loading texts...</p>
+	</div>
+{:else}
 <div class="texts-page">
 	<div class="page-header">
 		<h2>Texts & Translation</h2>
@@ -271,8 +295,8 @@
 					{#each texts as text}
 						<button 
 							class="text-item" 
-							class:selected={selectedTextId === text.id}
-							onclick={() => selectedTextId = text.id}
+							class:selected={selectedTextId === text._id}
+							onclick={() => selectedTextId = text._id}
 						>
 							<span class="text-title">{text.title}</span>
 							{#if text.source}
@@ -293,7 +317,7 @@
 						<h3 class="text-title-large">{selectedText.title}</h3>
 						<div class="text-actions">
 							<Button size="sm" variant="ghost" onclick={() => openTextModal(selectedText)}>Edit</Button>
-							<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = selectedText.id}>Delete</Button>
+							<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = selectedText._id}>Delete</Button>
 						</div>
 					</div>
 					
@@ -405,6 +429,7 @@
 		</div>
 	</div>
 </div>
+{/if}
 
 <Modal 
 	bind:open={textModalOpen} 
@@ -535,6 +560,14 @@
 </Modal>
 
 <style>
+	.loading-container {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		padding: var(--space-12);
+		color: var(--color-text-secondary);
+	}
+	
 	.texts-page {
 		display: flex;
 		flex-direction: column;

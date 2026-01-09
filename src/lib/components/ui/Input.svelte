@@ -9,6 +9,7 @@
 		id?: string;
 		name?: string;
 		size?: 'sm' | 'md' | 'lg';
+		maxlength?: number;
 		error?: string;
 		oninput?: (e: Event) => void;
 		onchange?: (e: Event) => void;
@@ -25,6 +26,7 @@
 		id,
 		name,
 		size = 'md',
+		maxlength,
 		error,
 		oninput,
 		onchange,
@@ -42,6 +44,7 @@
 		{required}
 		{id}
 		{name}
+		{maxlength}
 		class="input input-{size}"
 		class:error
 		autocomplete="off"

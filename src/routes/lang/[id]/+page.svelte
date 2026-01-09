@@ -1,6 +1,47 @@
 <script lang="ts">
-	import { Card, Button, Badge } from '$lib/components/ui';
-	import { currentLanguage, languageStats } from '$lib/stores';
+	import { Card, Badge } from '$lib/components/ui';
+	import { currentLanguage } from '$lib/stores';
+	import { page } from '$app/stores';
+	import { runQuery } from '$lib/convex';
+	import { onMount } from 'svelte';
+
+	interface Stats {
+		phonemes: number;
+		words: number;
+		morphemes: number;
+		scripts: number;
+	}
+
+	let stats = $state<Stats>({ phonemes: 0, words: 0, morphemes: 0, scripts: 0 });
+	let loading = $state(true);
+	
+	const languageId = $derived($page.params.id);
+
+	onMount(async () => {
+		if (!languageId) return;
+		
+		try {
+			// Fetch counts in parallel - Convex expects Id<"languages"> but we pass string
+			// The queries will handle the conversion
+			const [phonemes, words, morphemes, scripts] = await Promise.all([
+				runQuery<unknown[]>('phonology:getPhonemes', { languageId }),
+				runQuery<unknown[]>('lexicon:getWords', { languageId }),
+				runQuery<unknown[]>('morphology:getMorphemes', { languageId }),
+				runQuery<unknown[]>('scripts:getScripts', { languageId })
+			]);
+			
+			stats = {
+				phonemes: phonemes?.length ?? 0,
+				words: words?.length ?? 0,
+				morphemes: morphemes?.length ?? 0,
+				scripts: scripts?.length ?? 0
+			};
+		} catch (e) {
+			console.error('Failed to load stats:', e);
+		} finally {
+			loading = false;
+		}
+	});
 </script>
 
 <div class="overview">
@@ -8,40 +49,56 @@
 		<div class="stats-grid">
 			<Card title="Phonemes">
 				<div class="stat">
-					<span class="stat-value">{$currentLanguage.phonemes?.length ?? 0}</span>
+					{#if loading}
+						<span class="stat-value">-</span>
+					{:else}
+						<span class="stat-value">{stats.phonemes}</span>
+					{/if}
 					<span class="stat-label">Total phonemes</span>
 				</div>
-				<a href="/lang/{$currentLanguage.id}/phonology" class="card-link">
+				<a href="/lang/{languageId}/phonology" class="card-link">
 					Manage phonology
 				</a>
 			</Card>
 			
 			<Card title="Lexicon">
 				<div class="stat">
-					<span class="stat-value">{$currentLanguage.words?.length ?? 0}</span>
+					{#if loading}
+						<span class="stat-value">-</span>
+					{:else}
+						<span class="stat-value">{stats.words}</span>
+					{/if}
 					<span class="stat-label">Words</span>
 				</div>
-				<a href="/lang/{$currentLanguage.id}/lexicon" class="card-link">
+				<a href="/lang/{languageId}/lexicon" class="card-link">
 					Manage lexicon
 				</a>
 			</Card>
 			
 			<Card title="Morphology">
 				<div class="stat">
-					<span class="stat-value">{$currentLanguage.morphemes?.length ?? 0}</span>
+					{#if loading}
+						<span class="stat-value">-</span>
+					{:else}
+						<span class="stat-value">{stats.morphemes}</span>
+					{/if}
 					<span class="stat-label">Morphemes</span>
 				</div>
-				<a href="/lang/{$currentLanguage.id}/morphology" class="card-link">
+				<a href="/lang/{languageId}/morphology" class="card-link">
 					Manage morphology
 				</a>
 			</Card>
 			
 			<Card title="Scripts">
 				<div class="stat">
-					<span class="stat-value">{$currentLanguage.scripts?.length ?? 0}</span>
+					{#if loading}
+						<span class="stat-value">-</span>
+					{:else}
+						<span class="stat-value">{stats.scripts}</span>
+					{/if}
 					<span class="stat-label">Writing systems</span>
 				</div>
-				<a href="/lang/{$currentLanguage.id}/scripts" class="card-link">
+				<a href="/lang/{languageId}/scripts" class="card-link">
 					Manage scripts
 				</a>
 			</Card>
@@ -87,15 +144,15 @@
 		<div class="quick-actions">
 			<Card title="Quick Actions">
 				<div class="actions-grid">
-					<a href="/lang/{$currentLanguage.id}/lexicon?add=true" class="action-item">
+					<a href="/lang/{languageId}/lexicon?add=true" class="action-item">
 						<span class="action-icon">+</span>
 						<span class="action-text">Add Word</span>
 					</a>
-					<a href="/lang/{$currentLanguage.id}/phonology?add=true" class="action-item">
+					<a href="/lang/{languageId}/phonology?add=true" class="action-item">
 						<span class="action-icon">+</span>
 						<span class="action-text">Add Phoneme</span>
 					</a>
-					<a href="/lang/{$currentLanguage.id}/texts?add=true" class="action-item">
+					<a href="/lang/{languageId}/texts?add=true" class="action-item">
 						<span class="action-icon">+</span>
 						<span class="action-text">New Text</span>
 					</a>

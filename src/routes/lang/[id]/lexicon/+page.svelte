@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { Card, Button, Input, Modal, Select, Badge, Textarea, IPAKeyboard, HelpTooltip } from '$lib/components/ui';
-	import { currentLanguage } from '$lib/stores';
+	import { runQuery, runMutation, getUserId } from '$lib/convex';
+	import { onMount } from 'svelte';
 	
 	const languageId = $derived($page.params.id);
 	
@@ -55,7 +56,7 @@
 	}
 	
 	interface Word {
-		id: string;
+		_id: string;
 		lemma: string;
 		ipa?: string;
 		romanization?: string;
@@ -73,7 +74,7 @@
 	}
 	
 	interface InflectedForm {
-		id: string;
+		_id: string;
 		form: string;
 		ipa?: string;
 		grammaticalFeatures?: Record<string, string>;
@@ -81,7 +82,7 @@
 	}
 	
 	interface WordRelation {
-		id: string;
+		_id: string;
 		fromWordId: string;
 		toWordId: string;
 		relationType: RelationType;
@@ -90,7 +91,24 @@
 		toWord?: Word;
 	}
 	
-	const words = $derived(($currentLanguage?.words ?? []) as Word[]);
+	let words = $state<Word[]>([]);
+	let loading = $state(true);
+	
+	onMount(async () => {
+		await loadData();
+	});
+	
+	async function loadData() {
+		loading = true;
+		try {
+			const wordsData = await runQuery<Word[]>('lexicon:getWords', { languageId });
+			words = wordsData ?? [];
+		} catch (e) {
+			console.error('Failed to load lexicon data:', e);
+		} finally {
+			loading = false;
+		}
+	}
 	
 	const filteredWords = $derived(() => {
 		let result = words;
@@ -203,34 +221,31 @@
 		saving = true;
 		try {
 			const payload = {
+				userId: getUserId(),
+				languageId,
 				lemma: wordForm.lemma,
-				ipa: wordForm.ipa || null,
-				romanization: wordForm.romanization || null,
+				ipa: wordForm.ipa || undefined,
+				romanization: wordForm.romanization || undefined,
 				wordClass: wordForm.wordClass,
-				definitions: wordForm.definitions ? parseDefinitions(wordForm.definitions) : null,
-				etymology: wordForm.etymology ? { origin: wordForm.etymology } : null,
-				morphologicalAnalysis: wordForm.morphologicalAnalysis || null,
-				notes: wordForm.notes || null,
-				tags: wordForm.tags ? wordForm.tags.split(',').map(t => t.trim()).filter(Boolean) : null,
-				semanticFields: wordForm.semanticFields ? wordForm.semanticFields.split(',').map(s => s.trim()).filter(Boolean) : null,
-				usageNotes: wordForm.usageNotes || null
+				definitions: wordForm.definitions ? parseDefinitions(wordForm.definitions) : undefined,
+				etymology: wordForm.etymology ? { origin: wordForm.etymology } : undefined,
+				morphologicalAnalysis: wordForm.morphologicalAnalysis || undefined,
+				notes: wordForm.notes || undefined,
+				tags: wordForm.tags ? wordForm.tags.split(',').map(t => t.trim()).filter(Boolean) : undefined,
+				semanticFields: wordForm.semanticFields ? wordForm.semanticFields.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+				usageNotes: wordForm.usageNotes || undefined
 			};
 			
 			if (editingWord) {
-				await fetch(`/api/languages/${languageId}/words/${editingWord.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('lexicon:updateWord', {
+					...payload,
+					wordId: editingWord._id
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/words`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
-				});
+				await runMutation('lexicon:createWord', payload);
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			wordModalOpen = false;
 		} finally {
 			saving = false;
@@ -238,8 +253,11 @@
 	}
 	
 	async function deleteWord(id: string) {
-		await fetch(`/api/languages/${languageId}/words/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		await runMutation('lexicon:deleteWord', {
+			userId: getUserId(),
+			wordId: id
+		});
+		await loadData();
 		deleteConfirmId = null;
 	}
 	
@@ -257,16 +275,14 @@
 		
 		saving = true;
 		try {
-			await fetch(`/api/languages/${languageId}/words/${selectedWordForRelation.id}/relations`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					toWordId: newRelation.toWordId,
-					relationType: newRelation.relationType
-				})
+			await runMutation('lexicon:createWordRelation', {
+				userId: getUserId(),
+				fromWordId: selectedWordForRelation._id,
+				toWordId: newRelation.toWordId,
+				relationType: newRelation.relationType
 			});
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			relationModalOpen = false;
 		} finally {
 			saving = false;
@@ -277,14 +293,14 @@
 		const related: { relation: string; word: Word }[] = [];
 		
 		word.relationsFrom?.forEach(rel => {
-			const targetWord = words.find(w => w.id === rel.toWordId);
+			const targetWord = words.find(w => w._id === rel.toWordId);
 			if (targetWord) {
 				related.push({ relation: rel.relationType, word: targetWord });
 			}
 		});
 		
 		word.relationsTo?.forEach(rel => {
-			const sourceWord = words.find(w => w.id === rel.fromWordId);
+			const sourceWord = words.find(w => w._id === rel.fromWordId);
 			if (sourceWord) {
 				const inverseRelation = getInverseRelation(rel.relationType);
 				related.push({ relation: inverseRelation, word: sourceWord });
@@ -320,112 +336,118 @@
 		<Button variant="primary" onclick={() => openWordModal()}>Add Word</Button>
 	</div>
 	
-	<Card>
-		<div class="search-bar">
-			<div class="search-input">
-				<Input 
-					type="search"
-					bind:value={searchQuery} 
-					placeholder="Search words, meanings..." 
-				/>
-			</div>
-			<div class="filter-controls">
-				<Select 
-					options={[{ value: '', label: 'All word classes' }, ...wordClasses]}
-					bind:value={filterWordClass}
-				/>
-				{#if allTags().length > 0}
-					<Select 
-						options={[{ value: '', label: 'All tags' }, ...allTags().map(t => ({ value: t, label: t }))]}
-						bind:value={filterTag}
+	{#if loading}
+		<Card>
+			<p class="loading-message">Loading lexicon...</p>
+		</Card>
+	{:else}
+		<Card>
+			<div class="search-bar">
+				<div class="search-input">
+					<Input 
+						type="search"
+						bind:value={searchQuery} 
+						placeholder="Search words, meanings..." 
 					/>
-				{/if}
-			</div>
-		</div>
-	</Card>
-	
-	<div class="word-list">
-		{#each filteredWords() as word}
-			<Card>
-				<div class="word-header">
-					<div class="word-title">
-						<span class="word-lemma">{word.lemma}</span>
-						{#if word.ipa}
-							<span class="word-ipa">/{word.ipa}/</span>
-						{/if}
-						<Badge label={word.wordClass} />
-					</div>
-					<div class="word-actions">
-						<Button size="sm" variant="ghost" onclick={() => openRelationModal(word)}>Link</Button>
-						<Button size="sm" variant="ghost" onclick={() => openWordModal(word)}>Edit</Button>
-						<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = word.id}>Delete</Button>
-					</div>
 				</div>
-				
-				{#if word.romanization}
-					<div class="word-romanization">
-						Romanization: {word.romanization}
-					</div>
-				{/if}
-				
-				{#if word.definitions?.length}
-					<div class="word-definitions">
-						{#each word.definitions as def, i}
-							<div class="definition">
-								<span class="def-number">{i + 1}.</span>
-								<span class="def-meaning">{def.meaning}</span>
-							</div>
-						{/each}
-					</div>
-				{/if}
-				
-				{#if word.morphologicalAnalysis}
-					<div class="word-analysis">
-						<span class="analysis-label">Analysis:</span>
-						<code>{word.morphologicalAnalysis}</code>
-					</div>
-				{/if}
-				
-				{#if word.etymology?.origin}
-					<div class="word-etymology">
-						<span class="etymology-label">Etymology:</span>
-						{word.etymology.origin}
-					</div>
-				{/if}
-				
-				{#if word.tags?.length}
-					<div class="word-tags">
-						{#each word.tags as tag}
-							<Badge label={tag} />
-						{/each}
-					</div>
-				{/if}
-				
-				{@const related = getRelatedWords(word)}
-				{#if related.length > 0}
-					<div class="word-relations">
-						<span class="relations-label">Related:</span>
-						{#each related as rel}
-							<span class="relation-item">
-								<span class="relation-type">{rel.relation}:</span>
-								<span class="relation-word">{rel.word.lemma}</span>
-							</span>
-						{/each}
-					</div>
-				{/if}
-			</Card>
-		{:else}
-			<Card>
-				<p class="empty-message">
-					{#if searchQuery || filterWordClass || filterTag}
-						No words match your search criteria.
-					{:else}
-						No words in the lexicon yet. Click "Add Word" to get started.
+				<div class="filter-controls">
+					<Select 
+						options={[{ value: '', label: 'All word classes' }, ...wordClasses]}
+						bind:value={filterWordClass}
+					/>
+					{#if allTags().length > 0}
+						<Select 
+							options={[{ value: '', label: 'All tags' }, ...allTags().map(t => ({ value: t, label: t }))]}
+							bind:value={filterTag}
+						/>
 					{/if}
-				</p>
-			</Card>
-		{/each}
-	</div>
+				</div>
+			</div>
+		</Card>
+		
+		<div class="word-list">
+			{#each filteredWords() as word}
+				<Card>
+					<div class="word-header">
+						<div class="word-title">
+							<span class="word-lemma">{word.lemma}</span>
+							{#if word.ipa}
+								<span class="word-ipa">/{word.ipa}/</span>
+							{/if}
+							<Badge label={word.wordClass} />
+						</div>
+						<div class="word-actions">
+							<Button size="sm" variant="ghost" onclick={() => openRelationModal(word)}>Link</Button>
+							<Button size="sm" variant="ghost" onclick={() => openWordModal(word)}>Edit</Button>
+							<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = word._id}>Delete</Button>
+						</div>
+					</div>
+					
+					{#if word.romanization}
+						<div class="word-romanization">
+							Romanization: {word.romanization}
+						</div>
+					{/if}
+					
+					{#if word.definitions?.length}
+						<div class="word-definitions">
+							{#each word.definitions as def, i}
+								<div class="definition">
+									<span class="def-number">{i + 1}.</span>
+									<span class="def-meaning">{def.meaning}</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
+					
+					{#if word.morphologicalAnalysis}
+						<div class="word-analysis">
+							<span class="analysis-label">Analysis:</span>
+							<code>{word.morphologicalAnalysis}</code>
+						</div>
+					{/if}
+					
+					{#if word.etymology?.origin}
+						<div class="word-etymology">
+							<span class="etymology-label">Etymology:</span>
+							{word.etymology.origin}
+						</div>
+					{/if}
+					
+					{#if word.tags?.length}
+						<div class="word-tags">
+							{#each word.tags as tag}
+								<Badge label={tag} />
+							{/each}
+						</div>
+					{/if}
+					
+					{@const related = getRelatedWords(word)}
+					{#if related.length > 0}
+						<div class="word-relations">
+							<span class="relations-label">Related:</span>
+							{#each related as rel}
+								<span class="relation-item">
+									<span class="relation-type">{rel.relation}:</span>
+									<span class="relation-word">{rel.word.lemma}</span>
+								</span>
+							{/each}
+						</div>
+					{/if}
+				</Card>
+			{:else}
+				<Card>
+					<p class="empty-message">
+						{#if searchQuery || filterWordClass || filterTag}
+							No words match your search criteria.
+						{:else}
+							No words in the lexicon yet. Click "Add Word" to get started.
+						{/if}
+					</p>
+				</Card>
+			{/each}
+		</div>
+	{/if}
 </div>
 
 <Modal 
@@ -565,8 +587,8 @@
 			<label for="relation-target">Target Word</label>
 			<Select 
 				id="relation-target"
-				options={words.filter(w => w.id !== selectedWordForRelation?.id).map(w => ({ 
-					value: w.id, 
+				options={words.filter(w => w._id !== selectedWordForRelation?._id).map(w => ({ 
+					value: w._id, 
 					label: `${w.lemma} (${w.wordClass})`
 				}))}
 				bind:value={newRelation.toWordId}
@@ -619,6 +641,12 @@
 	
 	.header-stats {
 		margin-right: auto;
+	}
+	
+	.loading-message {
+		color: var(--color-text-secondary);
+		text-align: center;
+		padding: var(--space-8);
 	}
 	
 	.search-bar {

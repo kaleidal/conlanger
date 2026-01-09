@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { Card, Button, Input, Modal, Tabs, IPAKeyboard, Select, Badge, HelpTooltip } from '$lib/components/ui';
+	import { Card, Button, Input, Modal, Tabs, IPAKeyboard, Select, Badge, HelpTooltip, Checkbox } from '$lib/components/ui';
 	import { currentLanguage } from '$lib/stores';
+	import { runQuery, runMutation, getUserId } from '$lib/convex';
+	import { onMount } from 'svelte';
 	import { 
 		IPA_CONSONANTS, 
 		IPA_VOWELS, 
@@ -65,10 +67,11 @@
 	let soundChangeTestResult = $state('');
 	
 	let saving = $state(false);
+	let loading = $state(true);
 	let deleteConfirmId = $state<string | null>(null);
 	
 	interface Phoneme {
-		id: string;
+		_id: string;
 		symbol: string;
 		type: 'consonant' | 'vowel';
 		ipa: string;
@@ -78,7 +81,7 @@
 	}
 	
 	interface Allophone {
-		id: string;
+		_id: string;
 		phonemeId: string;
 		symbol: string;
 		ipa: string;
@@ -87,7 +90,7 @@
 	}
 	
 	interface Phonotactic {
-		id: string;
+		_id: string;
 		name: string;
 		pattern: string;
 		description?: string;
@@ -97,7 +100,7 @@
 	}
 	
 	interface SoundChangeRule {
-		id: string;
+		_id: string;
 		name: string;
 		fromPattern: string;
 		toPattern: string;
@@ -109,16 +112,43 @@
 		exceptions?: string[];
 	}
 	
-	const phonemes = $derived(($currentLanguage?.phonemes ?? []) as Phoneme[]);
-	const allophones = $derived(($currentLanguage?.allophones ?? []) as Allophone[]);
-	const phonotactics = $derived(($currentLanguage?.phonotactics ?? []) as Phonotactic[]);
-	const soundChanges = $derived(($currentLanguage?.soundChanges ?? []) as SoundChangeRule[]);
+	// Data stores
+	let phonemes = $state<Phoneme[]>([]);
+	let allophones = $state<Allophone[]>([]);
+	let phonotactics = $state<Phonotactic[]>([]);
+	let soundChanges = $state<SoundChangeRule[]>([]);
 	
 	const consonants = $derived(phonemes.filter(p => p.type === 'consonant'));
 	const vowels = $derived(phonemes.filter(p => p.type === 'vowel'));
 	
 	const consonantPlaces = ['bilabial', 'labiodental', 'dental', 'alveolar', 'postalveolar', 'retroflex', 'palatal', 'velar', 'uvular', 'pharyngeal', 'glottal', 'labial-velar', 'labial-palatal'] as const;
 	const consonantManners = ['plosive', 'nasal', 'trill', 'tap', 'fricative', 'lateral-fricative', 'approximant', 'lateral-approximant', 'affricate'] as const;
+	
+	// Load data on mount
+	onMount(async () => {
+		await loadData();
+	});
+	
+	async function loadData() {
+		loading = true;
+		try {
+			const [phonemesData, allophonesData, phonotacticsData, soundChangesData] = await Promise.all([
+				runQuery<Phoneme[]>('phonology:getPhonemes', { languageId }),
+				runQuery<Allophone[]>('phonology:getAllophones', { languageId }),
+				runQuery<Phonotactic[]>('phonology:getPhonotactics', { languageId }),
+				runQuery<SoundChangeRule[]>('phonology:getSoundChanges', { languageId })
+			]);
+			
+			phonemes = phonemesData ?? [];
+			allophones = allophonesData ?? [];
+			phonotactics = phonotacticsData ?? [];
+			soundChanges = soundChangesData ?? [];
+		} catch (e) {
+			console.error('Failed to load phonology data:', e);
+		} finally {
+			loading = false;
+		}
+	}
 	
 	function getConsonantAt(manner: string, place: string, voiced: boolean): Phoneme | undefined {
 		return consonants.find(p => {
@@ -196,31 +226,36 @@
 	async function savePhoneme() {
 		saving = true;
 		try {
+			const userId = getUserId();
+			if (!userId) throw new Error('Not authenticated');
+			
 			const features = getFeaturesBySymbol(phonemeForm.ipa);
-			const payload = {
-				symbol: phonemeForm.symbol,
-				ipa: phonemeForm.ipa,
-				type: phonemeForm.type,
-				romanization: phonemeForm.romanization || null,
-				description: phonemeForm.description || null,
-				features: features?.features ?? null
-			};
 			
 			if (editingPhoneme) {
-				await fetch(`/api/languages/${languageId}/phonemes/${editingPhoneme.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:updatePhoneme', {
+					phonemeId: editingPhoneme._id,
+					userId,
+					symbol: phonemeForm.symbol,
+					ipa: phonemeForm.ipa,
+					type: phonemeForm.type,
+					romanization: phonemeForm.romanization || undefined,
+					description: phonemeForm.description || undefined,
+					features: features?.features
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/phonemes`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:createPhoneme', {
+					languageId,
+					userId,
+					symbol: phonemeForm.symbol,
+					ipa: phonemeForm.ipa,
+					type: phonemeForm.type,
+					romanization: phonemeForm.romanization || undefined,
+					description: phonemeForm.description || undefined,
+					features: features?.features
 				});
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			phonemeModalOpen = false;
 		} finally {
 			saving = false;
@@ -228,8 +263,11 @@
 	}
 	
 	async function deletePhoneme(id: string) {
-		await fetch(`/api/languages/${languageId}/phonemes/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		const userId = getUserId();
+		if (!userId) return;
+		
+		await runMutation('phonology:deletePhoneme', { phonemeId: id, userId });
+		await loadData();
 		deleteConfirmId = null;
 	}
 	
@@ -246,7 +284,7 @@
 		} else {
 			editingAllophone = null;
 			allophoneForm = {
-				phonemeId: phonemes[0]?.id ?? '',
+				phonemeId: phonemes[0]?._id ?? '',
 				symbol: '',
 				ipa: '',
 				environment: '',
@@ -259,29 +297,32 @@
 	async function saveAllophone() {
 		saving = true;
 		try {
-			const payload = {
-				phonemeId: allophoneForm.phonemeId,
-				symbol: allophoneForm.symbol,
-				ipa: allophoneForm.ipa,
-				environment: allophoneForm.environment,
-				environmentDescription: allophoneForm.environmentDescription || null
-			};
+			const userId = getUserId();
+			if (!userId) throw new Error('Not authenticated');
 			
 			if (editingAllophone) {
-				await fetch(`/api/languages/${languageId}/allophones/${editingAllophone.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:updateAllophone', {
+					allophoneId: editingAllophone._id,
+					userId,
+					phonemeId: allophoneForm.phonemeId,
+					symbol: allophoneForm.symbol,
+					ipa: allophoneForm.ipa,
+					environment: allophoneForm.environment,
+					environmentDescription: allophoneForm.environmentDescription || undefined
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/allophones`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:createAllophone', {
+					languageId,
+					userId,
+					phonemeId: allophoneForm.phonemeId,
+					symbol: allophoneForm.symbol,
+					ipa: allophoneForm.ipa,
+					environment: allophoneForm.environment,
+					environmentDescription: allophoneForm.environmentDescription || undefined
 				});
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			allophoneModalOpen = false;
 		} finally {
 			saving = false;
@@ -289,8 +330,11 @@
 	}
 	
 	async function deleteAllophone(id: string) {
-		await fetch(`/api/languages/${languageId}/allophones/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		const userId = getUserId();
+		if (!userId) return;
+		
+		await runMutation('phonology:deleteAllophone', { allophoneId: id, userId });
+		await loadData();
 		deleteConfirmId = null;
 	}
 	
@@ -322,30 +366,38 @@
 	async function savePhonotactic() {
 		saving = true;
 		try {
-			const payload = {
-				name: phonotacticForm.name,
-				pattern: phonotacticForm.pattern,
-				description: phonotacticForm.description || null,
-				syllablePosition: phonotacticForm.syllablePosition || null,
-				isRequired: phonotacticForm.isRequired,
-				examples: phonotacticForm.examples ? phonotacticForm.examples.split(',').map(e => e.trim()).filter(Boolean) : null
-			};
+			const userId = getUserId();
+			if (!userId) throw new Error('Not authenticated');
+			
+			const examples = phonotacticForm.examples 
+				? phonotacticForm.examples.split(',').map(e => e.trim()).filter(Boolean) 
+				: undefined;
 			
 			if (editingPhonotactic) {
-				await fetch(`/api/languages/${languageId}/phonotactics/${editingPhonotactic.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:updatePhonotactic', {
+					phonotacticId: editingPhonotactic._id,
+					userId,
+					name: phonotacticForm.name,
+					pattern: phonotacticForm.pattern,
+					description: phonotacticForm.description || undefined,
+					syllablePosition: phonotacticForm.syllablePosition || undefined,
+					isRequired: phonotacticForm.isRequired,
+					examples
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/phonotactics`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:createPhonotactic', {
+					languageId,
+					userId,
+					name: phonotacticForm.name,
+					pattern: phonotacticForm.pattern,
+					description: phonotacticForm.description || undefined,
+					syllablePosition: phonotacticForm.syllablePosition || undefined,
+					isRequired: phonotacticForm.isRequired,
+					examples
 				});
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			phonotacticModalOpen = false;
 		} finally {
 			saving = false;
@@ -353,8 +405,11 @@
 	}
 	
 	async function deletePhonotactic(id: string) {
-		await fetch(`/api/languages/${languageId}/phonotactics/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		const userId = getUserId();
+		if (!userId) return;
+		
+		await runMutation('phonology:deletePhonotactic', { phonotacticId: id, userId });
+		await loadData();
 		deleteConfirmId = null;
 	}
 	
@@ -390,38 +445,44 @@
 	async function saveSoundChange() {
 		saving = true;
 		try {
+			const userId = getUserId();
+			if (!userId) throw new Error('Not authenticated');
+			
 			const exceptionsArray = soundChangeForm.exceptions
 				.split(',')
 				.map(e => e.trim())
 				.filter(Boolean);
 			
-			const payload = {
-				name: soundChangeForm.name,
-				fromPattern: soundChangeForm.fromPattern,
-				toPattern: soundChangeForm.toPattern,
-				environment: soundChangeForm.environment || null,
-				description: soundChangeForm.description || null,
-				era: soundChangeForm.era || null,
-				isActive: soundChangeForm.isActive,
-				orderIndex: editingSoundChange?.orderIndex ?? soundChanges.length,
-				exceptions: exceptionsArray.length > 0 ? exceptionsArray : null
-			};
-			
 			if (editingSoundChange) {
-				await fetch(`/api/languages/${languageId}/sound-changes/${editingSoundChange.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:updateSoundChange', {
+					soundChangeId: editingSoundChange._id,
+					userId,
+					name: soundChangeForm.name,
+					fromPattern: soundChangeForm.fromPattern,
+					toPattern: soundChangeForm.toPattern,
+					environment: soundChangeForm.environment || undefined,
+					description: soundChangeForm.description || undefined,
+					era: soundChangeForm.era || undefined,
+					isActive: soundChangeForm.isActive,
+					exceptions: exceptionsArray.length > 0 ? exceptionsArray : undefined
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/sound-changes`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('phonology:createSoundChange', {
+					languageId,
+					userId,
+					name: soundChangeForm.name,
+					fromPattern: soundChangeForm.fromPattern,
+					toPattern: soundChangeForm.toPattern,
+					environment: soundChangeForm.environment || undefined,
+					description: soundChangeForm.description || undefined,
+					era: soundChangeForm.era || undefined,
+					isActive: soundChangeForm.isActive,
+					orderIndex: soundChanges.length,
+					exceptions: exceptionsArray.length > 0 ? exceptionsArray : undefined
 				});
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			soundChangeModalOpen = false;
 		} finally {
 			saving = false;
@@ -429,8 +490,11 @@
 	}
 	
 	async function deleteSoundChange(id: string) {
-		await fetch(`/api/languages/${languageId}/sound-changes/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		const userId = getUserId();
+		if (!userId) return;
+		
+		await runMutation('phonology:deleteSoundChange', { soundChangeId: id, userId });
+		await loadData();
 		deleteConfirmId = null;
 	}
 	
@@ -454,7 +518,7 @@
 	}
 	
 	function getPhonemeById(id: string): Phoneme | undefined {
-		return phonemes.find(p => p.id === id);
+		return phonemes.find(p => p._id === id);
 	}
 	
 	const sections = [
@@ -466,320 +530,327 @@
 </script>
 
 <div class="phonology-page">
-	<Tabs 
-		tabs={sections} 
-		activeTab={activeSection} 
-		ontabchange={(id) => activeSection = id as typeof activeSection}
-	>
-		{#if activeSection === 'inventory'}
-			<div class="section">
-				<div class="section-header">
-					<h2>Phoneme Inventory</h2>
-					<Button variant="primary" onclick={() => openPhonemeModal()}>Add Phoneme</Button>
-				</div>
-				
-				<Card title="Consonants ({consonants.length})">
-					<div class="consonant-chart">
-						<table>
-							<thead>
-								<tr>
-									<th></th>
-									{#each consonantPlaces as place}
-										<th colspan="2">{place}</th>
-									{/each}
-								</tr>
-							</thead>
-							<tbody>
-								{#each consonantManners as manner}
+	{#if loading}
+		<div class="loading-state">
+			<div class="spinner"></div>
+			<p>Loading phonology data...</p>
+		</div>
+	{:else}
+		<Tabs 
+			tabs={sections} 
+			activeTab={activeSection} 
+			ontabchange={(id) => activeSection = id as typeof activeSection}
+		>
+			{#if activeSection === 'inventory'}
+				<div class="section">
+					<div class="section-header">
+						<h2>Phoneme Inventory</h2>
+						<Button variant="primary" onclick={() => openPhonemeModal()}>Add Phoneme</Button>
+					</div>
+					
+					<Card title="Consonants ({consonants.length})">
+						<div class="consonant-chart">
+							<table>
+								<thead>
 									<tr>
-										<th class="manner-label">{manner}</th>
+										<th></th>
 										{#each consonantPlaces as place}
-											{@const voiceless = getConsonantAt(manner, place, false)}
-											{@const voiced = getConsonantAt(manner, place, true)}
-											<td class="phoneme-cell">
-												{#if voiceless}
-													<button 
-														class="phoneme-btn" 
-														onclick={() => openPhonemeModal(voiceless)}
-														title={voiceless.romanization ? `/${voiceless.ipa}/ → ${voiceless.romanization}` : `/${voiceless.ipa}/`}
-													>
-														{voiceless.ipa}
-													</button>
-												{/if}
-											</td>
-											<td class="phoneme-cell">
-												{#if voiced}
-													<button 
-														class="phoneme-btn" 
-														onclick={() => openPhonemeModal(voiced)}
-														title={voiced.romanization ? `/${voiced.ipa}/ → ${voiced.romanization}` : `/${voiced.ipa}/`}
-													>
-														{voiced.ipa}
-													</button>
-												{/if}
-											</td>
+											<th colspan="2">{place}</th>
 										{/each}
 									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-					{#if otherConsonants().length > 0}
-						<div class="other-phonemes">
-							<div class="other-label">Other consonants</div>
-							<div class="other-grid">
-								{#each otherConsonants() as phoneme}
-									<button 
-										class="phoneme-btn" 
-										onclick={() => openPhonemeModal(phoneme)}
-										title={phoneme.romanization ? `/${phoneme.ipa}/ → ${phoneme.romanization}` : `/${phoneme.ipa}/`}
-									>
-										{phoneme.ipa}
-									</button>
-								{/each}
-							</div>
-						</div>
-					{/if}
-				</Card>
-				
-				<Card title="Vowels ({vowels.length})">
-					<div class="vowel-chart">
-						<table>
-							<thead>
-								<tr>
-									<th></th>
-									{#each VOWEL_BACKNESS as backness}
-										<th colspan="2">{backness}</th>
+								</thead>
+								<tbody>
+									{#each consonantManners as manner}
+										<tr>
+											<th class="manner-label">{manner}</th>
+											{#each consonantPlaces as place}
+												{@const voiceless = getConsonantAt(manner, place, false)}
+												{@const voiced = getConsonantAt(manner, place, true)}
+												<td class="phoneme-cell">
+													{#if voiceless}
+														<button 
+															class="phoneme-btn" 
+															onclick={() => openPhonemeModal(voiceless)}
+															title={voiceless.romanization ? `/${voiceless.ipa}/ → ${voiceless.romanization}` : `/${voiceless.ipa}/`}
+														>
+															{voiceless.ipa}
+														</button>
+													{/if}
+												</td>
+												<td class="phoneme-cell">
+													{#if voiced}
+														<button 
+															class="phoneme-btn" 
+															onclick={() => openPhonemeModal(voiced)}
+															title={voiced.romanization ? `/${voiced.ipa}/ → ${voiced.romanization}` : `/${voiced.ipa}/`}
+														>
+															{voiced.ipa}
+														</button>
+													{/if}
+												</td>
+											{/each}
+										</tr>
 									{/each}
-								</tr>
-							</thead>
-							<tbody>
-								{#each VOWEL_HEIGHTS as height}
-									<tr>
-										<th class="height-label">{height}</th>
-										{#each VOWEL_BACKNESS as backness}
-											{@const unrounded = getVowelAt(height, backness, false)}
-											{@const rounded = getVowelAt(height, backness, true)}
-											<td class="phoneme-cell">
-												{#if unrounded}
-													<button 
-														class="phoneme-btn" 
-														onclick={() => openPhonemeModal(unrounded)}
-														title={unrounded.romanization ? `/${unrounded.ipa}/ → ${unrounded.romanization}` : `/${unrounded.ipa}/`}
-													>
-														{unrounded.ipa}
-													</button>
-												{/if}
-											</td>
-											<td class="phoneme-cell">
-												{#if rounded}
-													<button 
-														class="phoneme-btn" 
-														onclick={() => openPhonemeModal(rounded)}
-														title={rounded.romanization ? `/${rounded.ipa}/ → ${rounded.romanization}` : `/${rounded.ipa}/`}
-													>
-														{rounded.ipa}
-													</button>
-												{/if}
-											</td>
-										{/each}
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				</Card>
-				
-				<Card title="All Phonemes">
-					<div class="phoneme-list">
-						{#each phonemes as phoneme}
-							<div class="phoneme-item">
-								<span class="phoneme-symbol">{phoneme.ipa}</span>
-								<span class="phoneme-type">{phoneme.type}</span>
-								{#if phoneme.romanization}
-									<span class="phoneme-roman">→ {phoneme.romanization}</span>
-								{/if}
-								<div class="phoneme-actions">
-									<Button size="sm" variant="ghost" onclick={() => openPhonemeModal(phoneme)}>Edit</Button>
-									<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = phoneme.id}>Delete</Button>
+								</tbody>
+							</table>
+						</div>
+						{#if otherConsonants().length > 0}
+							<div class="other-phonemes">
+								<div class="other-label">Other consonants</div>
+								<div class="other-grid">
+									{#each otherConsonants() as phoneme}
+										<button 
+											class="phoneme-btn" 
+											onclick={() => openPhonemeModal(phoneme)}
+											title={phoneme.romanization ? `/${phoneme.ipa}/ → ${phoneme.romanization}` : `/${phoneme.ipa}/`}
+										>
+											{phoneme.ipa}
+										</button>
+									{/each}
 								</div>
 							</div>
-						{:else}
-							<p class="empty-message">No phonemes defined yet. Click "Add Phoneme" to get started.</p>
-						{/each}
-					</div>
-				</Card>
-			</div>
-		{:else if activeSection === 'allophones'}
-			<div class="section">
-				<div class="section-header">
-					<h2>Allophones</h2>
-					<Button variant="primary" onclick={() => openAllophoneModal()} disabled={phonemes.length === 0}>
-						Add Allophone
-					</Button>
-				</div>
-				
-				{#if phonemes.length === 0}
-					<Card>
-						<p class="empty-message">Add phonemes first before defining allophones.</p>
+						{/if}
 					</Card>
-				{:else}
-					<Card>
-						<div class="allophone-list">
-							{#each allophones as allophone}
-								{@const parentPhoneme = getPhonemeById(allophone.phonemeId)}
-								<div class="allophone-item">
-									<div class="allophone-info">
-										<span class="allophone-parent">/{parentPhoneme?.ipa ?? '?'}/</span>
-										<span class="allophone-arrow">→</span>
-										<span class="allophone-symbol">[{allophone.ipa}]</span>
-										<span class="allophone-env">/ {allophone.environment}</span>
-									</div>
-									{#if allophone.environmentDescription}
-										<p class="allophone-desc">{allophone.environmentDescription}</p>
+					
+					<Card title="Vowels ({vowels.length})">
+						<div class="vowel-chart">
+							<table>
+								<thead>
+									<tr>
+										<th></th>
+										{#each VOWEL_BACKNESS as backness}
+											<th colspan="2">{backness}</th>
+										{/each}
+									</tr>
+								</thead>
+								<tbody>
+									{#each VOWEL_HEIGHTS as height}
+										<tr>
+											<th class="height-label">{height}</th>
+											{#each VOWEL_BACKNESS as backness}
+												{@const unrounded = getVowelAt(height, backness, false)}
+												{@const rounded = getVowelAt(height, backness, true)}
+												<td class="phoneme-cell">
+													{#if unrounded}
+														<button 
+															class="phoneme-btn" 
+															onclick={() => openPhonemeModal(unrounded)}
+															title={unrounded.romanization ? `/${unrounded.ipa}/ → ${unrounded.romanization}` : `/${unrounded.ipa}/`}
+														>
+															{unrounded.ipa}
+														</button>
+													{/if}
+												</td>
+												<td class="phoneme-cell">
+													{#if rounded}
+														<button 
+															class="phoneme-btn" 
+															onclick={() => openPhonemeModal(rounded)}
+															title={rounded.romanization ? `/${rounded.ipa}/ → ${rounded.romanization}` : `/${rounded.ipa}/`}
+														>
+															{rounded.ipa}
+														</button>
+													{/if}
+												</td>
+											{/each}
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					</Card>
+					
+					<Card title="All Phonemes">
+						<div class="phoneme-list">
+							{#each phonemes as phoneme}
+								<div class="phoneme-item">
+									<span class="phoneme-symbol">{phoneme.ipa}</span>
+									<span class="phoneme-type">{phoneme.type}</span>
+									{#if phoneme.romanization}
+										<span class="phoneme-roman">→ {phoneme.romanization}</span>
 									{/if}
-									<div class="allophone-actions">
-										<Button size="sm" variant="ghost" onclick={() => openAllophoneModal(allophone)}>Edit</Button>
-										<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `allophone-${allophone.id}`}>Delete</Button>
+									<div class="phoneme-actions">
+										<Button size="sm" variant="ghost" onclick={() => openPhonemeModal(phoneme)}>Edit</Button>
+										<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = phoneme._id}>Delete</Button>
 									</div>
 								</div>
 							{:else}
-								<p class="empty-message">No allophones defined yet.</p>
+								<p class="empty-message">No phonemes defined yet. Click "Add Phoneme" to get started.</p>
 							{/each}
 						</div>
 					</Card>
-				{/if}
-			</div>
-		{:else if activeSection === 'phonotactics'}
-			<div class="section">
-				<div class="section-header">
-					<h2>Phonotactics</h2>
-					<Button variant="primary" onclick={() => openPhonotacticModal()}>Add Rule</Button>
 				</div>
-				
-				<Card title="Syllable Structure Rules">
-					<div class="phonotactic-list">
-						{#each phonotactics as rule}
-							<div class="phonotactic-item">
-								<div class="phonotactic-header">
-									<span class="phonotactic-name">{rule.name}</span>
-									{#if rule.syllablePosition}
-										<Badge label={rule.syllablePosition} />
-									{/if}
-									{#if rule.isRequired}
-										<Badge label="Required" />
-									{/if}
-								</div>
-								<code class="phonotactic-pattern">{rule.pattern}</code>
-								{#if rule.description}
-									<p class="phonotactic-desc">{rule.description}</p>
-								{/if}
-								{#if rule.examples?.length}
-									<div class="phonotactic-examples">
-										Examples: {rule.examples.join(', ')}
+			{:else if activeSection === 'allophones'}
+				<div class="section">
+					<div class="section-header">
+						<h2>Allophones</h2>
+						<Button variant="primary" onclick={() => openAllophoneModal()} disabled={phonemes.length === 0}>
+							Add Allophone
+						</Button>
+					</div>
+					
+					{#if phonemes.length === 0}
+						<Card>
+							<p class="empty-message">Add phonemes first before defining allophones.</p>
+						</Card>
+					{:else}
+						<Card>
+							<div class="allophone-list">
+								{#each allophones as allophone}
+									{@const parentPhoneme = getPhonemeById(allophone.phonemeId)}
+									<div class="allophone-item">
+										<div class="allophone-info">
+											<span class="allophone-parent">/{parentPhoneme?.ipa ?? '?'}/</span>
+											<span class="allophone-arrow">→</span>
+											<span class="allophone-symbol">[{allophone.ipa}]</span>
+											<span class="allophone-env">/ {allophone.environment}</span>
+										</div>
+										{#if allophone.environmentDescription}
+											<p class="allophone-desc">{allophone.environmentDescription}</p>
+										{/if}
+										<div class="allophone-actions">
+											<Button size="sm" variant="ghost" onclick={() => openAllophoneModal(allophone)}>Edit</Button>
+											<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `allophone-${allophone._id}`}>Delete</Button>
+										</div>
 									</div>
-								{/if}
-								<div class="phonotactic-actions">
-									<Button size="sm" variant="ghost" onclick={() => openPhonotacticModal(rule)}>Edit</Button>
-									<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `phonotactic-${rule.id}`}>Delete</Button>
-								</div>
+								{:else}
+									<p class="empty-message">No allophones defined yet.</p>
+								{/each}
 							</div>
-						{:else}
-							<p class="empty-message">No phonotactic rules defined yet.</p>
-						{/each}
-					</div>
-				</Card>
-				
-				<Card title="Pattern Reference">
-					<div class="pattern-help">
-						<p>Use these symbols in patterns:</p>
-						<ul>
-							<li><code>C</code> - Any consonant</li>
-							<li><code>V</code> - Any vowel</li>
-							<li><code>N</code> - Any nasal</li>
-							<li><code>P</code> - Any plosive</li>
-							<li><code>F</code> - Any fricative</li>
-							<li><code>L</code> - Any lateral</li>
-							<li><code>R</code> - Any rhotic</li>
-							<li><code>G</code> - Any glide</li>
-							<li><code>(X)</code> - Optional X</li>
-							<li><code>#</code> - Word boundary</li>
-						</ul>
-						<p>Example: <code>(C)(C)V(C)</code> allows CV, CCV, CVC, CCVC syllables</p>
-					</div>
-				</Card>
-			</div>
-		{:else if activeSection === 'sound-changes'}
-			<div class="section">
-				<div class="section-header">
-					<h2>Sound Changes</h2>
-					<Button variant="primary" onclick={() => openSoundChangeModal()}>Add Rule</Button>
+						</Card>
+					{/if}
 				</div>
-				
-				<Card title="Test Sound Changes">
-					<div class="sound-change-tester">
-						<div class="tester-input">
-							<Input 
-								bind:value={soundChangeTestInput} 
-								placeholder="Enter word to test..."
-								onkeydown={(e) => e.key === 'Enter' && testSoundChanges()}
-							/>
-							<Button onclick={testSoundChanges}>Apply</Button>
+			{:else if activeSection === 'phonotactics'}
+				<div class="section">
+					<div class="section-header">
+						<h2>Phonotactics</h2>
+						<Button variant="primary" onclick={() => openPhonotacticModal()}>Add Rule</Button>
+					</div>
+					
+					<Card title="Syllable Structure Rules">
+						<div class="phonotactic-list">
+							{#each phonotactics as rule}
+								<div class="phonotactic-item">
+									<div class="phonotactic-header">
+										<span class="phonotactic-name">{rule.name}</span>
+										{#if rule.syllablePosition}
+											<Badge label={rule.syllablePosition} />
+										{/if}
+										{#if rule.isRequired}
+											<Badge label="Required" />
+										{/if}
+									</div>
+									<code class="phonotactic-pattern">{rule.pattern}</code>
+									{#if rule.description}
+										<p class="phonotactic-desc">{rule.description}</p>
+									{/if}
+									{#if rule.examples?.length}
+										<div class="phonotactic-examples">
+											Examples: {rule.examples.join(', ')}
+										</div>
+									{/if}
+									<div class="phonotactic-actions">
+										<Button size="sm" variant="ghost" onclick={() => openPhonotacticModal(rule)}>Edit</Button>
+										<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `phonotactic-${rule._id}`}>Delete</Button>
+									</div>
+								</div>
+							{:else}
+								<p class="empty-message">No phonotactic rules defined yet.</p>
+							{/each}
 						</div>
-						{#if soundChangeTestResult}
-							<div class="tester-result">
-								<span class="result-label">Result:</span>
-								<span class="result-value">{soundChangeTestInput} → {soundChangeTestResult}</span>
+					</Card>
+					
+					<Card title="Pattern Reference">
+						<div class="pattern-help">
+							<p>Use these symbols in patterns:</p>
+							<ul>
+								<li><code>C</code> - Any consonant</li>
+								<li><code>V</code> - Any vowel</li>
+								<li><code>N</code> - Any nasal</li>
+								<li><code>P</code> - Any plosive</li>
+								<li><code>F</code> - Any fricative</li>
+								<li><code>L</code> - Any lateral</li>
+								<li><code>R</code> - Any rhotic</li>
+								<li><code>G</code> - Any glide</li>
+								<li><code>(X)</code> - Optional X</li>
+								<li><code>#</code> - Word boundary</li>
+							</ul>
+							<p>Example: <code>(C)(C)V(C)</code> allows CV, CCV, CVC, CCVC syllables</p>
+						</div>
+					</Card>
+				</div>
+			{:else if activeSection === 'sound-changes'}
+				<div class="section">
+					<div class="section-header">
+						<h2>Sound Changes</h2>
+						<Button variant="primary" onclick={() => openSoundChangeModal()}>Add Rule</Button>
+					</div>
+					
+					<Card title="Test Sound Changes">
+						<div class="sound-change-tester">
+							<div class="tester-input">
+								<Input 
+									bind:value={soundChangeTestInput} 
+									placeholder="Enter word to test..."
+									onkeydown={(e) => e.key === 'Enter' && testSoundChanges()}
+								/>
+								<Button onclick={testSoundChanges}>Apply</Button>
 							</div>
-						{/if}
-					</div>
-				</Card>
-				
-				<Card title="Sound Change Rules">
-					<div class="sound-change-list">
-						{#each soundChanges.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule, index}
-							<div class="sound-change-item" class:inactive={!rule.isActive}>
-								<div class="sound-change-header">
-									<span class="sound-change-order">{index + 1}.</span>
-									<span class="sound-change-name">{rule.name}</span>
-									{#if rule.era}
-										<Badge label={rule.era} />
-									{/if}
-									{#if !rule.isActive}
-										<Badge label="Inactive" />
-									{/if}
+							{#if soundChangeTestResult}
+								<div class="tester-result">
+									<span class="result-label">Result:</span>
+									<span class="result-value">{soundChangeTestInput} → {soundChangeTestResult}</span>
 								</div>
-								<code class="sound-change-rule">{formatSoundChange(rule)}</code>
-								{#if rule.description}
-									<p class="sound-change-desc">{rule.description}</p>
-								{/if}
-								<div class="sound-change-actions">
-									<Button size="sm" variant="ghost" onclick={() => openSoundChangeModal(rule)}>Edit</Button>
-									<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `sc-${rule.id}`}>Delete</Button>
+							{/if}
+						</div>
+					</Card>
+					
+					<Card title="Sound Change Rules">
+						<div class="sound-change-list">
+							{#each soundChanges.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule, index}
+								<div class="sound-change-item" class:inactive={!rule.isActive}>
+									<div class="sound-change-header">
+										<span class="sound-change-order">{index + 1}.</span>
+										<span class="sound-change-name">{rule.name}</span>
+										{#if rule.era}
+											<Badge label={rule.era} />
+										{/if}
+										{#if !rule.isActive}
+											<Badge label="Inactive" />
+										{/if}
+									</div>
+									<code class="sound-change-rule">{formatSoundChange(rule)}</code>
+									{#if rule.description}
+										<p class="sound-change-desc">{rule.description}</p>
+									{/if}
+									<div class="sound-change-actions">
+										<Button size="sm" variant="ghost" onclick={() => openSoundChangeModal(rule)}>Edit</Button>
+										<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `sc-${rule._id}`}>Delete</Button>
+									</div>
 								</div>
-							</div>
-						{:else}
-							<p class="empty-message">No sound changes defined yet.</p>
-						{/each}
-					</div>
-				</Card>
-				
-				<Card title="Pattern Reference">
-					<div class="pattern-help">
-						<p>Sound change notation:</p>
-						<ul>
-							<li><code>a → b</code> - a becomes b</li>
-							<li><code>a → ∅</code> - a is deleted</li>
-							<li><code>a → b / C_V</code> - a becomes b between consonant and vowel</li>
-							<li><code>a → b / #_</code> - a becomes b word-initially</li>
-							<li><code>a → b / _#</code> - a becomes b word-finally</li>
-						</ul>
-						<p>Feature classes: C (consonant), V (vowel), N (nasal), P (plosive), F (fricative), etc.</p>
-					</div>
-				</Card>
-			</div>
-		{/if}
-	</Tabs>
+							{:else}
+								<p class="empty-message">No sound changes defined yet.</p>
+							{/each}
+						</div>
+					</Card>
+					
+					<Card title="Pattern Reference">
+						<div class="pattern-help">
+							<p>Sound change notation:</p>
+							<ul>
+								<li><code>a → b</code> - a becomes b</li>
+								<li><code>a → ∅</code> - a is deleted</li>
+								<li><code>a → b / C_V</code> - a becomes b between consonant and vowel</li>
+								<li><code>a → b / #_</code> - a becomes b word-initially</li>
+								<li><code>a → b / _#</code> - a becomes b word-finally</li>
+							</ul>
+							<p>Feature classes: C (consonant), V (vowel), N (nasal), P (plosive), F (fricative), etc.</p>
+						</div>
+					</Card>
+				</div>
+			{/if}
+		</Tabs>
+	{/if}
 </div>
 
 <Modal 
@@ -848,7 +919,7 @@
 			<label for="allophone-phoneme">Parent Phoneme <HelpTooltip key="allophonePhoneme" inline /></label>
 			<Select 
 				id="allophone-phoneme"
-				options={phonemes.map(p => ({ value: p.id, label: `/${p.ipa}/` }))}
+				options={phonemes.map(p => ({ value: p._id, label: `/${p.ipa}/` }))}
 				bind:value={allophoneForm.phonemeId}
 			/>
 		</div>
@@ -921,10 +992,7 @@
 				/>
 			</div>
 			<div class="form-group checkbox-group">
-				<label>
-					<input type="checkbox" bind:checked={phonotacticForm.isRequired} />
-					Required
-				</label>
+				<Checkbox bind:checked={phonotacticForm.isRequired} label="Required" />
 			</div>
 		</div>
 		
@@ -982,10 +1050,7 @@
 				<Input id="sc-era" bind:value={soundChangeForm.era} placeholder="e.g. Proto-Language" />
 			</div>
 			<div class="form-group checkbox-group">
-				<label>
-					<input type="checkbox" bind:checked={soundChangeForm.isActive} />
-					Active
-				</label>
+				<Checkbox bind:checked={soundChangeForm.isActive} label="Active" />
 			</div>
 		</div>
 		
@@ -1041,6 +1106,29 @@
 <style>
 	.phonology-page {
 		max-width: 1200px;
+	}
+	
+	.loading-state {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-16);
+		color: var(--color-text-secondary);
+	}
+	
+	.spinner {
+		width: 32px;
+		height: 32px;
+		border: 3px solid var(--color-border);
+		border-top-color: var(--color-primary);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+		margin-bottom: var(--space-4);
+	}
+	
+	@keyframes spin {
+		to { transform: rotate(360deg); }
 	}
 	
 	.section {
@@ -1383,15 +1471,4 @@
 		justify-content: flex-end;
 	}
 	
-	.checkbox-group label {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		cursor: pointer;
-	}
-	
-	.checkbox-group input[type="checkbox"] {
-		width: 16px;
-		height: 16px;
-	}
 </style>

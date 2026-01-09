@@ -1,31 +1,33 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { Card, Button, Input, Tabs, Select, Badge, HelpTooltip } from '$lib/components/ui';
-	import { currentLanguage } from '$lib/stores';
+	import { onMount } from 'svelte';
+	import { Card, Button, Input, Tabs, Select, Badge, HelpTooltip, Checkbox } from '$lib/components/ui';
+	import { runQuery, runMutation, getUserId } from '$lib/convex';
 	import { PhonotacticsEngine } from '$lib/engines/phonotactics';
 	import { SoundChangeEngine, type SoundChange as SCType } from '$lib/engines/sound-changes';
 	import { MorphologyEngine, type Morpheme as MorphType } from '$lib/engines/morphology';
 	
 	const languageId = $derived($page.params.id);
 	
+	let loading = $state(true);
 	let activeSection = $state<'word-generator' | 'sound-changes' | 'paradigm-generator' | 'minimal-pairs' | 'phonotactic-probability'>('word-generator');
 	
 	interface Phoneme {
-		id: string;
+		_id: string;
 		symbol: string;
 		type: 'consonant' | 'vowel';
 		ipa: string;
 	}
 	
 	interface Word {
-		id: string;
+		_id: string;
 		lemma: string;
 		ipa?: string;
 		wordClass: string;
 	}
 	
 	interface SoundChange {
-		id: string;
+		_id: string;
 		name: string;
 		fromPattern: string;
 		toPattern: string;
@@ -34,14 +36,14 @@
 	}
 	
 	interface GrammarCategory {
-		id: string;
+		_id: string;
 		name: string;
 		values: { name: string; abbreviation?: string; label?: string }[];
 		appliesTo?: string[];
 	}
 	
 	interface Morpheme {
-		id: string;
+		_id: string;
 		form: string;
 		type: 'prefix' | 'suffix' | 'infix' | 'circumfix';
 		gloss: string;
@@ -50,19 +52,45 @@
 	}
 	
 	interface InflectionClass {
-		id: string;
+		_id: string;
 		name: string;
 		wordClass: string;
 		appliesTo?: string[];
 		paradigm?: { features: Record<string, string>; form: string }[];
 	}
 	
-	const phonemes = $derived(($currentLanguage?.phonemes ?? []) as Phoneme[]);
-	const words = $derived(($currentLanguage?.words ?? []) as Word[]);
-	const soundChanges = $derived(($currentLanguage?.soundChanges ?? []) as SoundChange[]);
-	const grammarCategories = $derived(($currentLanguage?.grammarCategories ?? []) as GrammarCategory[]);
-	const morphemes = $derived(($currentLanguage?.morphemes ?? []) as Morpheme[]);
-	const inflectionClasses = $derived(($currentLanguage?.inflectionClasses ?? []) as InflectionClass[]);
+	let phonemes = $state<Phoneme[]>([]);
+	let words = $state<Word[]>([]);
+	let soundChanges = $state<SoundChange[]>([]);
+	let grammarCategories = $state<GrammarCategory[]>([]);
+	let morphemes = $state<Morpheme[]>([]);
+	let inflectionClasses = $state<InflectionClass[]>([]);
+	
+	async function loadData() {
+		loading = true;
+		try {
+			const [phonemesData, wordsData, soundChangesData, categoriesData, morphemesData, classesData] = await Promise.all([
+				runQuery<Phoneme[]>('phonology:listPhonemes', { languageId }),
+				runQuery<Word[]>('lexicon:listWords', { languageId }),
+				runQuery<SoundChange[]>('phonology:listSoundChanges', { languageId }),
+				runQuery<GrammarCategory[]>('morphology:listGrammarCategories', { languageId }),
+				runQuery<Morpheme[]>('morphology:listMorphemes', { languageId }),
+				runQuery<InflectionClass[]>('morphology:listInflectionClasses', { languageId })
+			]);
+			phonemes = phonemesData ?? [];
+			words = wordsData ?? [];
+			soundChanges = soundChangesData ?? [];
+			grammarCategories = categoriesData ?? [];
+			morphemes = morphemesData ?? [];
+			inflectionClasses = classesData ?? [];
+		} finally {
+			loading = false;
+		}
+	}
+	
+	onMount(() => {
+		loadData();
+	});
 	
 	const phonemeFrequencies = $derived.by(() => {
 		const freqMap = new Map<string, number>();
@@ -148,18 +176,16 @@
 		const wordsToAdd = Array.from(selectedGeneratedWords);
 		
 		for (const word of wordsToAdd) {
-			await fetch(`/api/languages/${languageId}/words`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					lemma: word,
-					ipa: word,
-					wordClass: 'noun'
-				})
+			await runMutation('lexicon:createWord', {
+				languageId,
+				userId: getUserId(),
+				lemma: word,
+				ipa: word,
+				wordClass: 'noun'
 			});
 		}
 		
-		await currentLanguage.load(languageId);
+		await loadData();
 		
 		generatedWords = generatedWords.filter(w => !selectedGeneratedWords.has(w));
 		selectedGeneratedWords = new Set();
@@ -169,7 +195,7 @@
 		if (scBatchSettings.selectedWords.length === 0) return;
 		
 		const selectedRules = soundChanges
-			.filter(r => scBatchSettings.selectedRules.includes(r.id))
+			.filter(r => scBatchSettings.selectedRules.includes(r._id))
 			.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0))
 			.map(r => ({
 				name: r.name,
@@ -181,7 +207,7 @@
 		
 		const engine = new SoundChangeEngine();
 		
-		const selectedWordObjects = words.filter(w => scBatchSettings.selectedWords.includes(w.id));
+		const selectedWordObjects = words.filter(w => scBatchSettings.selectedWords.includes(w._id));
 		
 		scBatchSettings.preview = selectedWordObjects.map(word => {
 			const original = word.ipa || word.lemma;
@@ -196,7 +222,7 @@
 		scApplying = true;
 		try {
 			const selectedRules = soundChanges
-				.filter(r => scBatchSettings.selectedRules.includes(r.id))
+				.filter(r => scBatchSettings.selectedRules.includes(r._id))
 				.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0))
 				.map(r => ({
 					name: r.name,
@@ -208,25 +234,24 @@
 			
 			const engine = new SoundChangeEngine();
 			
-			const selectedWordObjects = words.filter(w => scBatchSettings.selectedWords.includes(w.id));
+			const selectedWordObjects = words.filter(w => scBatchSettings.selectedWords.includes(w._id));
 			
 			for (const word of selectedWordObjects) {
 				const original = word.ipa || word.lemma;
 				const result = engine.applyChanges(original, selectedRules);
 				
 				if (result.result !== original) {
-					await fetch(`/api/languages/${languageId}/words/${word.id}`, {
-						method: 'PUT',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({
-							ipa: result.result,
-							lemma: result.result
-						})
+					await runMutation('lexicon:updateWord', {
+						id: word._id,
+						languageId,
+						userId: getUserId(),
+						ipa: result.result,
+						lemma: result.result
 					});
 				}
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			scBatchSettings.preview = [];
 			scBatchSettings.selectedWords = [];
 		} finally {
@@ -240,7 +265,7 @@
 			return;
 		}
 		
-		const inflectionClass = inflectionClasses.find(ic => ic.id === paradigmSettings.inflectionClassId);
+		const inflectionClass = inflectionClasses.find(ic => ic._id === paradigmSettings.inflectionClassId);
 		if (!inflectionClass || !inflectionClass.paradigm) {
 			generatedParadigm = [];
 			return;
@@ -262,7 +287,7 @@
 			const labels: string[] = [];
 			
 			for (const [categoryName, valueName] of Object.entries(cell.features)) {
-				const category = grammarCategories.find(c => c.name === categoryName || c.id === categoryName);
+				const category = grammarCategories.find(c => c.name === categoryName || c._id === categoryName);
 				const value = category?.values.find(v => v.name === valueName);
 				if (value) {
 					labels.push(value.abbreviation || value.name);
@@ -423,13 +448,13 @@
 			return;
 		}
 		
-		const phonemeFrequencies = new Map<string, number>();
+		const phonemeFreqs = new Map<string, number>();
 		let totalSegments = 0;
 		
 		for (const word of words) {
 			const ipa = word.ipa || word.lemma;
 			for (const char of ipa) {
-				phonemeFrequencies.set(char, (phonemeFrequencies.get(char) || 0) + 1);
+				phonemeFreqs.set(char, (phonemeFreqs.get(char) || 0) + 1);
 				totalSegments++;
 			}
 		}
@@ -440,7 +465,7 @@
 		
 		const inputWord = probabilitySettings.word;
 		for (const char of inputWord) {
-			const count = phonemeFrequencies.get(char) || 0;
+			const count = phonemeFreqs.get(char) || 0;
 			const freq = totalSegments > 0 ? count / totalSegments : 0;
 			
 			breakdown.push({ segment: char, frequency: freq });
@@ -482,6 +507,11 @@
 	];
 </script>
 
+{#if loading}
+	<div class="loading-container">
+		<p>Loading tools data...</p>
+	</div>
+{:else}
 <div class="tools-page">
 	<Tabs 
 		tabs={sections} 
@@ -626,15 +656,14 @@
 						<Card title="Select Words">
 							<div class="select-list">
 								{#each words as word}
-									<label class="select-item">
-										<input 
-											type="checkbox" 
-											checked={scBatchSettings.selectedWords.includes(word.id)}
+									<div class="select-item">
+										<Checkbox 
+											checked={scBatchSettings.selectedWords.includes(word._id)}
 											onchange={() => {
-												if (scBatchSettings.selectedWords.includes(word.id)) {
-													scBatchSettings.selectedWords = scBatchSettings.selectedWords.filter(id => id !== word.id);
+												if (scBatchSettings.selectedWords.includes(word._id)) {
+													scBatchSettings.selectedWords = scBatchSettings.selectedWords.filter(id => id !== word._id);
 												} else {
-													scBatchSettings.selectedWords = [...scBatchSettings.selectedWords, word.id];
+													scBatchSettings.selectedWords = [...scBatchSettings.selectedWords, word._id];
 												}
 											}}
 										/>
@@ -642,14 +671,14 @@
 										{#if word.ipa && word.ipa !== word.lemma}
 											<span class="item-ipa">/{word.ipa}/</span>
 										{/if}
-									</label>
+									</div>
 								{/each}
 							</div>
 							<div class="select-actions">
 								<Button 
 									size="sm" 
 									variant="ghost" 
-									onclick={() => scBatchSettings.selectedWords = words.map(w => w.id)}
+									onclick={() => scBatchSettings.selectedWords = words.map(w => w._id)}
 								>
 									Select All
 								</Button>
@@ -666,28 +695,27 @@
 						<Card title="Select Rules">
 							<div class="select-list">
 								{#each soundChanges.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule}
-									<label class="select-item">
-										<input 
-											type="checkbox" 
-											checked={scBatchSettings.selectedRules.includes(rule.id)}
+									<div class="select-item">
+										<Checkbox 
+											checked={scBatchSettings.selectedRules.includes(rule._id)}
 											onchange={() => {
-												if (scBatchSettings.selectedRules.includes(rule.id)) {
-													scBatchSettings.selectedRules = scBatchSettings.selectedRules.filter(id => id !== rule.id);
+												if (scBatchSettings.selectedRules.includes(rule._id)) {
+													scBatchSettings.selectedRules = scBatchSettings.selectedRules.filter(id => id !== rule._id);
 												} else {
-													scBatchSettings.selectedRules = [...scBatchSettings.selectedRules, rule.id];
+													scBatchSettings.selectedRules = [...scBatchSettings.selectedRules, rule._id];
 												}
 											}}
 										/>
 									<span class="item-label">{rule.name}</span>
 									<span class="item-pattern">{rule.fromPattern} → {rule.toPattern}</span>
-									</label>
+									</div>
 								{/each}
 							</div>
 							<div class="select-actions">
 								<Button 
 									size="sm" 
 									variant="ghost" 
-									onclick={() => scBatchSettings.selectedRules = soundChanges.map(r => r.id)}
+									onclick={() => scBatchSettings.selectedRules = soundChanges.map(r => r._id)}
 								>
 									Select All
 								</Button>
@@ -775,7 +803,7 @@
 										id="paradigm-class"
 										options={[
 											{ value: '', label: 'Select a class...' },
-											...inflectionClasses.map(ic => ({ value: ic.id, label: ic.name }))
+											...inflectionClasses.map(ic => ({ value: ic._id, label: ic.name }))
 										]}
 										bind:value={paradigmSettings.inflectionClassId}
 									/>
@@ -842,14 +870,13 @@
 				{:else}
 					<Card title="Search Options">
 						<div class="minimal-pairs-form">
-							<label class="toggle-row">
-								<input 
-									type="checkbox" 
+							<div class="toggle-row">
+								<Checkbox 
 									checked={minimalPairsSettings.autoDetect}
 									onchange={() => minimalPairsSettings.autoDetect = !minimalPairsSettings.autoDetect}
+									label="Auto-detect all minimal pairs"
 								/>
-								<span>Auto-detect all minimal pairs</span>
-							</label>
+							</div>
 							
 							{#if !minimalPairsSettings.autoDetect}
 								<div class="form-row">
@@ -1013,8 +1040,17 @@
 		{/if}
 	</Tabs>
 </div>
+{/if}
 
 <style>
+	.loading-container {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		padding: var(--space-12);
+		color: var(--color-text-secondary);
+	}
+	
 	.tools-page {
 		max-width: 1200px;
 	}
@@ -1275,11 +1311,6 @@
 		align-items: center;
 		gap: var(--space-2);
 		cursor: pointer;
-	}
-	
-	.toggle-row input {
-		width: 18px;
-		height: 18px;
 	}
 	
 	.pairs-groups {

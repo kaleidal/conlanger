@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { onMount } from 'svelte';
 	import { Card, Button, Input, Modal, Tabs, Select, Badge, Textarea, HelpTooltip } from '$lib/components/ui';
-	import { currentLanguage } from '$lib/stores';
+	import { runQuery, runMutation, getUserId } from '$lib/convex';
 	
 	const languageId = $derived($page.params.id);
 	
 	let activeSection = $state<'word-order' | 'syntax-rules'>('word-order');
+	let loading = $state(true);
 	
 	let ruleModalOpen = $state(false);
 	let editingRule = $state<SyntaxRule | null>(null);
@@ -37,7 +39,7 @@
 	}
 	
 	interface SyntaxRule {
-		id: string;
+		_id: string;
 		name: string;
 		ruleType: string;
 		pattern: string;
@@ -60,13 +62,37 @@
 		negationStrategy?: string;
 	}
 	
-	const syntaxRules = $derived(($currentLanguage?.syntaxRules ?? []) as SyntaxRule[]);
-	const settings = $derived(($currentLanguage?.settings ?? {}) as LanguageSettings);
+	interface Language {
+		_id: string;
+		settings?: LanguageSettings;
+	}
+	
+	let syntaxRules = $state<SyntaxRule[]>([]);
+	let language = $state<Language | null>(null);
+	const settings = $derived((language?.settings ?? {}) as LanguageSettings);
 	
 	let localSettings = $state<LanguageSettings>({});
 	
 	$effect(() => {
 		localSettings = { ...settings };
+	});
+	
+	async function loadData() {
+		loading = true;
+		try {
+			const [rulesData, langData] = await Promise.all([
+				runQuery<SyntaxRule[]>('syntax:list', { languageId }),
+				runQuery<Language>('languages:get', { id: languageId })
+			]);
+			syntaxRules = rulesData ?? [];
+			language = langData;
+		} finally {
+			loading = false;
+		}
+	}
+	
+	onMount(() => {
+		loadData();
 	});
 	
 	const wordOrderOptions = [
@@ -159,7 +185,12 @@
 	async function saveSettings() {
 		settingsSaving = true;
 		try {
-			await currentLanguage.save({ settings: localSettings as Record<string, unknown> });
+			await runMutation('languages:update', { 
+				id: languageId, 
+				userId: getUserId(),
+				settings: localSettings as Record<string, unknown>
+			});
+			await loadData();
 		} finally {
 			settingsSaving = false;
 		}
@@ -221,31 +252,28 @@
 		saving = true;
 		try {
 			const payload = {
+				languageId,
+				userId: getUserId(),
 				name: ruleForm.name,
 				ruleType: ruleForm.ruleType,
 				pattern: ruleForm.pattern,
-				output: ruleForm.output || null,
-				description: ruleForm.description || null,
-				conditions: ruleForm.conditions ? parseConditions(ruleForm.conditions) : null,
-				examples: ruleForm.examples ? parseExamples(ruleForm.examples) : null,
+				output: ruleForm.output || undefined,
+				description: ruleForm.description || undefined,
+				conditions: ruleForm.conditions ? parseConditions(ruleForm.conditions) : undefined,
+				examples: ruleForm.examples ? parseExamples(ruleForm.examples) : undefined,
 				orderIndex: editingRule?.orderIndex ?? syntaxRules.length
 			};
 			
 			if (editingRule) {
-				await fetch(`/api/languages/${languageId}/syntax-rules/${editingRule.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('syntax:update', {
+					id: editingRule._id,
+					...payload
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/syntax-rules`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
-				});
+				await runMutation('syntax:create', payload);
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			ruleModalOpen = false;
 		} finally {
 			saving = false;
@@ -253,8 +281,11 @@
 	}
 	
 	async function deleteRule(id: string) {
-		await fetch(`/api/languages/${languageId}/syntax-rules/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		await runMutation('syntax:remove', { 
+			id,
+			userId: getUserId()
+		});
+		await loadData();
 		deleteConfirmId = null;
 	}
 	
@@ -264,6 +295,11 @@
 	];
 </script>
 
+{#if loading}
+	<div class="loading-container">
+		<p>Loading syntax data...</p>
+	</div>
+{:else}
 <div class="syntax-page">
 	<Tabs 
 		tabs={sections} 
@@ -475,7 +511,7 @@
 							
 							<div class="rule-actions">
 								<Button size="sm" variant="ghost" onclick={() => openRuleModal(rule)}>Edit</Button>
-								<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = rule.id}>Delete</Button>
+								<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = rule._id}>Delete</Button>
 							</div>
 						</Card>
 					{:else}
@@ -511,6 +547,7 @@
 		{/if}
 	</Tabs>
 </div>
+{/if}
 
 <Modal 
 	bind:open={ruleModalOpen} 
@@ -593,6 +630,14 @@
 </Modal>
 
 <style>
+	.loading-container {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		padding: var(--space-12);
+		color: var(--color-text-secondary);
+	}
+	
 	.syntax-page {
 		max-width: 1200px;
 	}

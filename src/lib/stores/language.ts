@@ -1,46 +1,91 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
+import { convex, runQuery, runMutation, getUserId, createConvexStore } from '$lib/convex';
 
 export interface Language {
-	id: string;
+	_id: string;
+	ownerId: string;
 	name: string;
 	nativeName?: string;
 	description?: string;
+	isoCode?: string;
+	isPublic: boolean;
 	settings?: Record<string, unknown>;
-	phonemes?: Phoneme[];
-	allophones?: unknown[];
-	phonotactics?: unknown[];
-	soundChanges?: unknown[];
-	morphemes?: unknown[];
-	grammarCategories?: unknown[];
-	inflectionClasses?: unknown[];
-	syntaxRules?: unknown[];
-	words?: Word[];
-	scripts?: unknown[];
-	texts?: unknown[];
-	createdAt?: string;
-	updatedAt?: string;
+	createdAt?: number;
+	updatedAt?: number;
+	owner?: {
+		displayName: string;
+		handle: string;
+		avatarUrl?: string;
+	};
+	access?: {
+		canRead: boolean;
+		canWrite: boolean;
+		isOwner: boolean;
+	};
+	role?: 'owner' | 'editor' | 'viewer';
 }
 
 export interface Phoneme {
-	id: string;
+	_id: string;
+	languageId: string;
 	symbol: string;
 	type: 'consonant' | 'vowel';
 	ipa: string;
 	romanization?: string;
 	features?: Record<string, unknown>;
+	sortOrder: number;
 }
 
 export interface Word {
-	id: string;
+	_id: string;
+	languageId: string;
 	lemma: string;
 	ipa?: string;
 	romanization?: string;
 	wordClass: string;
 	definitions?: { meaning: string }[];
+	createdAt: number;
+	updatedAt: number;
 }
 
+export interface Presence {
+	_id: string;
+	languageId: string;
+	userId: string;
+	sessionId: string;
+	currentPage: string;
+	currentElement?: string;
+	cursorPosition?: { x: number; y: number };
+	lastSeen: number;
+	color: string;
+	user?: {
+		displayName: string;
+		handle: string;
+		avatarUrl?: string;
+	};
+}
+
+export interface Activity {
+	_id: string;
+	languageId: string;
+	userId: string;
+	action: string;
+	entityType: string;
+	entityId: string;
+	details?: string;
+	timestamp: number;
+	user?: {
+		displayName: string;
+		handle: string;
+		avatarUrl?: string;
+	};
+}
+
+// Current language store with all related data
 function createLanguageStore() {
 	const { subscribe, set, update } = writable<Language | null>(null);
+	
+	let unsubscribe: (() => void) | null = null;
 	
 	return {
 		subscribe,
@@ -48,43 +93,53 @@ function createLanguageStore() {
 		update,
 		
 		async load(id: string) {
-			const response = await fetch(`/api/languages/${id}`);
-			if (response.ok) {
-				const language = await response.json();
-				set(language);
-				return language;
-			}
-			throw new Error('Failed to load language');
+			const userId = getUserId();
+			const language = await runQuery<Language>('languages:getLanguage', { 
+				languageId: id,
+				userId 
+			});
+			set(language);
+			
+			// Set up real-time subscription
+			if (unsubscribe) unsubscribe();
+			unsubscribe = convex.onUpdate(
+				'languages:getLanguage' as any,
+				{ languageId: id, userId },
+				(result: Language) => set(result)
+			);
+			
+			return language;
 		},
 		
-		async save(language: Partial<Language>) {
-			const current = await new Promise<Language | null>(resolve => {
-				subscribe(value => resolve(value))();
-			});
+		async save(updates: Partial<Language>) {
+			const current = get({ subscribe });
+			if (!current?._id) throw new Error('No language loaded');
 			
-			if (current?.id) {
-				const response = await fetch(`/api/languages/${current.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(language)
-				});
-				if (response.ok) {
-					const updated = await response.json();
-					update(lang => lang ? { ...lang, ...updated } : null);
-					return updated;
-				}
-			}
-			throw new Error('Failed to save language');
+			const userId = getUserId();
+			if (!userId) throw new Error('Not authenticated');
+			
+			await runMutation('languages:updateLanguage', {
+				languageId: current._id,
+				userId,
+				...updates
+			});
 		},
 		
 		clear() {
+			if (unsubscribe) {
+				unsubscribe();
+				unsubscribe = null;
+			}
 			set(null);
 		}
 	};
 }
 
+// Languages list store
 function createLanguagesStore() {
 	const { subscribe, set, update } = writable<Language[]>([]);
+	
+	let unsubscribe: (() => void) | null = null;
 	
 	return {
 		subscribe,
@@ -92,50 +147,161 @@ function createLanguagesStore() {
 		update,
 		
 		async load() {
-			const response = await fetch('/api/languages');
-			if (response.ok) {
-				const languages = await response.json();
-				set(languages);
-				return languages;
-			}
-			throw new Error('Failed to load languages');
+			const userId = getUserId();
+			const languages = await runQuery<Language[]>('languages:listLanguages', { userId });
+			set(languages || []);
+			
+			// Set up real-time subscription
+			if (unsubscribe) unsubscribe();
+			unsubscribe = convex.onUpdate(
+				'languages:listLanguages' as any,
+				{ userId },
+				(result: Language[]) => set(result || [])
+			);
+			
+			return languages;
 		},
 		
-		async create(language: Partial<Language>) {
-			const response = await fetch('/api/languages', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(language)
+		async create(language: { name: string; nativeName?: string; description?: string; isPublic?: boolean }) {
+			const userId = getUserId();
+			if (!userId) throw new Error('Not authenticated');
+			
+			const id = await runMutation<string>('languages:createLanguage', {
+				userId,
+				...language
 			});
-			if (response.ok) {
-				const created = await response.json();
-				update(languages => [...languages, created]);
-				return created;
-			}
-			throw new Error('Failed to create language');
+			return { id };
 		},
 		
 		async delete(id: string) {
-			const response = await fetch(`/api/languages/${id}`, {
-				method: 'DELETE'
+			const userId = getUserId();
+			if (!userId) throw new Error('Not authenticated');
+			
+			await runMutation('languages:deleteLanguage', {
+				languageId: id,
+				userId
 			});
-			if (response.ok) {
-				update(languages => languages.filter(l => l.id !== id));
-				return true;
+		},
+		
+		cleanup() {
+			if (unsubscribe) {
+				unsubscribe();
+				unsubscribe = null;
 			}
-			throw new Error('Failed to delete language');
+		}
+	};
+}
+
+// Presence store for real-time collaboration
+function createPresenceStore() {
+	const { subscribe, set } = writable<Presence[]>([]);
+	
+	let unsubscribe: (() => void) | null = null;
+	let updateInterval: ReturnType<typeof setInterval> | null = null;
+	
+	return {
+		subscribe,
+		
+		start(languageId: string, sessionId: string) {
+			const userId = getUserId();
+			if (!userId) return;
+			
+			// Subscribe to presence updates
+			if (unsubscribe) unsubscribe();
+			unsubscribe = convex.onUpdate(
+				'presence:getPresence' as any,
+				{ languageId },
+				(result: Presence[]) => set(result || [])
+			);
+			
+			// Update presence periodically
+			const updatePresence = async (page: string, element?: string) => {
+				try {
+					await runMutation('presence:updatePresence', {
+						languageId,
+						userId,
+						sessionId,
+						currentPage: page,
+						currentElement: element
+					});
+				} catch (e) {
+					console.error('Failed to update presence:', e);
+				}
+			};
+			
+			// Initial update
+			updatePresence(window.location.pathname);
+			
+			// Heartbeat every 10 seconds
+			updateInterval = setInterval(() => {
+				updatePresence(window.location.pathname);
+			}, 10000);
+			
+			return updatePresence;
+		},
+		
+		async stop(sessionId: string) {
+			if (updateInterval) {
+				clearInterval(updateInterval);
+				updateInterval = null;
+			}
+			
+			if (unsubscribe) {
+				unsubscribe();
+				unsubscribe = null;
+			}
+			
+			try {
+				await runMutation('presence:removePresence', { sessionId });
+			} catch (e) {
+				console.error('Failed to remove presence:', e);
+			}
+			
+			set([]);
+		}
+	};
+}
+
+// Activity log store
+function createActivityStore() {
+	const { subscribe, set } = writable<Activity[]>([]);
+	
+	let unsubscribe: (() => void) | null = null;
+	
+	return {
+		subscribe,
+		
+		start(languageId: string) {
+			if (unsubscribe) unsubscribe();
+			unsubscribe = convex.onUpdate(
+				'presence:getActivityLog' as any,
+				{ languageId, limit: 50 },
+				(result: Activity[]) => set(result || [])
+			);
+		},
+		
+		stop() {
+			if (unsubscribe) {
+				unsubscribe();
+				unsubscribe = null;
+			}
+			set([]);
 		}
 	};
 }
 
 export const currentLanguage = createLanguageStore();
 export const languages = createLanguagesStore();
+export const presence = createPresenceStore();
+export const activityLog = createActivityStore();
 
 export const languageStats = derived(currentLanguage, $language => {
 	if (!$language) return null;
 	
 	return {
-		phonemeCount: $language.phonemes?.length ?? 0,
-		wordCount: $language.words?.length ?? 0
+		name: $language.name,
+		isPublic: $language.isPublic,
+		canEdit: $language.access?.canWrite ?? false,
+		isOwner: $language.access?.isOwner ?? false
 	};
 });

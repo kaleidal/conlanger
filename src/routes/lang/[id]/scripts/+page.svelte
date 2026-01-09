@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { Card, Button, Input, Modal, Tabs, Select, Badge, Textarea, HelpTooltip } from '$lib/components/ui';
-	import { currentLanguage } from '$lib/stores';
+	import { runQuery, runMutation, getUserId } from '$lib/convex';
+	import { onMount } from 'svelte';
 	
 	const languageId = $derived($page.params.id);
 	
@@ -45,7 +46,7 @@
 	type ScriptType = 'alphabet' | 'abjad' | 'abugida' | 'syllabary' | 'logographic' | 'featural' | 'mixed';
 	
 	interface Script {
-		id: string;
+		_id: string;
 		name: string;
 		type: ScriptType;
 		description?: string;
@@ -55,7 +56,7 @@
 	}
 	
 	interface Glyph {
-		id: string;
+		_id: string;
 		scriptId: string;
 		character?: string;
 		svgPath?: string;
@@ -66,7 +67,7 @@
 	}
 	
 	interface RomanizationRule {
-		id: string;
+		_id: string;
 		scriptId: string;
 		nativeForm: string;
 		romanizedForm: string;
@@ -74,20 +75,38 @@
 		priority?: number;
 	}
 	
-	const scripts = $derived(($currentLanguage?.scripts ?? []) as Script[]);
-	const selectedScript = $derived(scripts.find(s => s.id === selectedScriptId));
+	let scripts = $state<Script[]>([]);
+	let loading = $state(true);
+	
+	const selectedScript = $derived(scripts.find(s => s._id === selectedScriptId));
 	const glyphs = $derived((selectedScript?.glyphs ?? []) as Glyph[]);
 	const romanizationRules = $derived((selectedScript?.romanizationRules ?? []) as RomanizationRule[]);
 	
+	onMount(async () => {
+		await loadData();
+	});
+	
+	async function loadData() {
+		loading = true;
+		try {
+			const scriptsData = await runQuery<Script[]>('scripts:getScripts', { languageId });
+			scripts = scriptsData ?? [];
+		} catch (e) {
+			console.error('Failed to load scripts data:', e);
+		} finally {
+			loading = false;
+		}
+	}
+	
 	$effect(() => {
 		if (scripts.length > 0 && !selectedScriptId) {
-			selectedScriptId = scripts[0].id;
+			selectedScriptId = scripts[0]._id;
 		}
 	});
 	
 	$effect(() => {
-		if (scripts.length > 0 && selectedScriptId && !scripts.find(s => s.id === selectedScriptId)) {
-			selectedScriptId = scripts[0]?.id ?? '';
+		if (scripts.length > 0 && selectedScriptId && !scripts.find(s => s._id === selectedScriptId)) {
+			selectedScriptId = scripts[0]?._id ?? '';
 		}
 	});
 	
@@ -132,30 +151,31 @@
 	async function saveScript() {
 		saving = true;
 		try {
-			const payload = {
-				name: scriptForm.name,
-				type: scriptForm.type,
-				description: scriptForm.description || null,
-				direction: scriptForm.direction
-			};
-			
+			const userId = getUserId();
 			if (editingScript) {
-				await fetch(`/api/languages/${languageId}/scripts/${editingScript.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('scripts:updateScript', {
+					userId,
+					scriptId: editingScript._id,
+					name: scriptForm.name,
+					type: scriptForm.type,
+					description: scriptForm.description || null,
+					direction: scriptForm.direction
 				});
 			} else {
-				const response = await fetch(`/api/languages/${languageId}/scripts`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				const newScript = await runMutation<{ _id: string }>('scripts:createScript', {
+					userId,
+					languageId,
+					name: scriptForm.name,
+					type: scriptForm.type,
+					description: scriptForm.description || null,
+					direction: scriptForm.direction
 				});
-				const newScript = await response.json();
-				selectedScriptId = newScript.id;
+				if (newScript?._id) {
+					selectedScriptId = newScript._id;
+				}
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			scriptModalOpen = false;
 		} finally {
 			saving = false;
@@ -163,11 +183,12 @@
 	}
 	
 	async function deleteScript(id: string) {
-		await fetch(`/api/languages/${languageId}/scripts/${id}`, { method: 'DELETE' });
+		const userId = getUserId();
+		await runMutation('scripts:deleteScript', { userId, scriptId: id });
 		if (selectedScriptId === id) {
-			selectedScriptId = scripts.filter(s => s.id !== id)[0]?.id ?? '';
+			selectedScriptId = scripts.filter(s => s._id !== id)[0]?._id ?? '';
 		}
-		await currentLanguage.load(languageId);
+		await loadData();
 		deleteConfirmId = '';
 	}
 	
@@ -199,6 +220,7 @@
 		
 		saving = true;
 		try {
+			const userId = getUserId();
 			const payload = {
 				character: glyphForm.character || null,
 				svgPath: glyphForm.svgPath || null,
@@ -209,20 +231,20 @@
 			};
 			
 			if (editingGlyph) {
-				await fetch(`/api/languages/${languageId}/scripts/${selectedScriptId}/glyphs/${editingGlyph.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('scripts:updateGlyph', {
+					userId,
+					glyphId: editingGlyph._id,
+					...payload
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/scripts/${selectedScriptId}/glyphs`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('scripts:createGlyph', {
+					userId,
+					scriptId: selectedScriptId,
+					...payload
 				});
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			glyphModalOpen = false;
 		} finally {
 			saving = false;
@@ -231,8 +253,9 @@
 	
 	async function deleteGlyph(id: string) {
 		if (!selectedScriptId) return;
-		await fetch(`/api/languages/${languageId}/scripts/${selectedScriptId}/glyphs/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		const userId = getUserId();
+		await runMutation('scripts:deleteGlyph', { userId, glyphId: id });
+		await loadData();
 		deleteConfirmId = '';
 	}
 	
@@ -262,6 +285,7 @@
 		
 		saving = true;
 		try {
+			const userId = getUserId();
 			const payload = {
 				nativeForm: romanizationForm.nativeForm,
 				romanizedForm: romanizationForm.romanizedForm,
@@ -270,20 +294,20 @@
 			};
 			
 			if (editingRule) {
-				await fetch(`/api/languages/${languageId}/scripts/${selectedScriptId}/romanization/${editingRule.id}`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('scripts:updateRomanizationRule', {
+					userId,
+					ruleId: editingRule._id,
+					...payload
 				});
 			} else {
-				await fetch(`/api/languages/${languageId}/scripts/${selectedScriptId}/romanization`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(payload)
+				await runMutation('scripts:createRomanizationRule', {
+					userId,
+					scriptId: selectedScriptId,
+					...payload
 				});
 			}
 			
-			await currentLanguage.load(languageId);
+			await loadData();
 			romanizationModalOpen = false;
 		} finally {
 			saving = false;
@@ -292,8 +316,9 @@
 	
 	async function deleteRomanization(id: string) {
 		if (!selectedScriptId) return;
-		await fetch(`/api/languages/${languageId}/scripts/${selectedScriptId}/romanization/${id}`, { method: 'DELETE' });
-		await currentLanguage.load(languageId);
+		const userId = getUserId();
+		await runMutation('scripts:deleteRomanizationRule', { userId, ruleId: id });
+		await loadData();
 		deleteConfirmId = '';
 	}
 	
@@ -321,192 +346,198 @@
 </script>
 
 <div class="scripts-page">
-	<Tabs 
-		tabs={sections} 
-		activeTab={activeSection} 
-		ontabchange={(id) => activeSection = id as typeof activeSection}
-	>
-		{#if activeSection === 'scripts'}
-			<div class="section">
-				<div class="section-header">
-					<h2>Writing Systems</h2>
-					<Button variant="primary" onclick={() => openScriptModal()}>Add Script</Button>
-				</div>
-				
-				<Card>
-					<p class="section-desc">
-						Define writing systems for your language. Each script can have its own set of glyphs
-						and romanization rules.
-					</p>
-				</Card>
-				
-				<div class="scripts-grid">
-					{#each scripts as script}
-						<Card>
-							<div class="script-header">
-								<h3 class="script-name">{script.name}</h3>
-								<Badge label={script.type} />
-							</div>
-							
-							{#if script.description}
-								<p class="script-desc">{script.description}</p>
-							{/if}
-							
-							<div class="script-meta">
-								<span class="meta-item">
-									<span class="meta-label">Direction:</span>
-									{script.direction === 'rtl' ? 'Right to Left' : 
-									 script.direction === 'ttb' ? 'Top to Bottom' : 'Left to Right'}
-								</span>
-								<span class="meta-item">
-									<span class="meta-label">Glyphs:</span>
-									{script.glyphs?.length ?? 0}
-								</span>
-							</div>
-							
-							<div class="script-actions">
-								<Button size="sm" variant="ghost" onclick={() => { selectedScriptId = script.id; activeSection = 'glyphs'; }}>
-									View Glyphs
-								</Button>
-								<Button size="sm" variant="ghost" onclick={() => openScriptModal(script)}>Edit</Button>
-								<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `script-${script.id}`}>Delete</Button>
-							</div>
-						</Card>
-					{:else}
-						<Card>
-							<p class="empty-message">No writing systems defined yet. Click "Add Script" to create one.</p>
-						</Card>
-					{/each}
-				</div>
-				
-				<Card title="Script Types Reference">
-					<div class="type-reference">
-						{#each scriptTypes as type}
-							<div class="type-item">
-								<span class="type-name">{type.label}</span>
-								<span class="type-desc">{type.description}</span>
-							</div>
-						{/each}
+	{#if loading}
+		<div class="loading-state">
+			<p>Loading scripts...</p>
+		</div>
+	{:else}
+		<Tabs 
+			tabs={sections} 
+			activeTab={activeSection} 
+			ontabchange={(id) => activeSection = id as typeof activeSection}
+		>
+			{#if activeSection === 'scripts'}
+				<div class="section">
+					<div class="section-header">
+						<h2>Writing Systems</h2>
+						<Button variant="primary" onclick={() => openScriptModal()}>Add Script</Button>
 					</div>
-				</Card>
-			</div>
-		{:else if activeSection === 'glyphs'}
-			<div class="section">
-				<div class="section-header">
-					<h2>Glyphs</h2>
-					<div class="header-controls">
-						{#if scripts.length > 1}
-							<Select 
-								options={scripts.map(s => ({ value: s.id, label: s.name }))}
-								bind:value={selectedScriptId}
-							/>
-						{/if}
-						<Button variant="primary" onclick={() => openGlyphModal()} disabled={!selectedScriptId}>
-							Add Glyph
-						</Button>
-					</div>
-				</div>
-				
-				{#if !selectedScript}
+					
 					<Card>
-						<p class="empty-message">Select a script or create one first.</p>
-					</Card>
-				{:else}
-					<Card title="{selectedScript.name} - Glyphs">
-						<div class="glyph-grid">
-							{#each glyphs.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) as glyph}
-								<button type="button" class="glyph-item" onclick={() => openGlyphModal(glyph)}>
-									{#if glyph.character}
-										<span class="glyph-char">{glyph.character}</span>
-									{:else if glyph.svgPath}
-										<svg class="glyph-svg" viewBox="0 0 100 100">
-											<path d={glyph.svgPath} fill="currentColor" />
-										</svg>
-									{:else}
-										<span class="glyph-placeholder">?</span>
-									{/if}
-									{#if glyph.phonemeMapping}
-										<span class="glyph-mapping">/{glyph.phonemeMapping}/</span>
-									{/if}
-									{#if glyph.name}
-										<span class="glyph-name">{glyph.name}</span>
-									{/if}
-								</button>
-							{:else}
-								<p class="empty-inline">No glyphs defined yet.</p>
-							{/each}
-						</div>
-					</Card>
-				{/if}
-			</div>
-		{:else if activeSection === 'romanization'}
-			<div class="section">
-				<div class="section-header">
-					<h2>Romanization Rules</h2>
-					<div class="header-controls">
-						{#if scripts.length > 1}
-							<Select 
-								options={scripts.map(s => ({ value: s.id, label: s.name }))}
-								bind:value={selectedScriptId}
-							/>
-						{/if}
-						<Button variant="primary" onclick={() => openRomanizationModal()} disabled={!selectedScriptId}>
-							Add Rule
-						</Button>
-					</div>
-				</div>
-				
-				{#if !selectedScript}
-					<Card>
-						<p class="empty-message">Select a script or create one first.</p>
-					</Card>
-				{:else}
-					<Card title="Test Romanization">
-						<div class="romanization-tester">
-							<div class="tester-row">
-								<Input 
-									bind:value={testInput} 
-									placeholder="Enter text in native script..."
-									onkeydown={(e) => e.key === 'Enter' && applyRomanization()}
-								/>
-								<Button onclick={applyRomanization}>Convert</Button>
-							</div>
-							{#if testOutput}
-								<div class="tester-result">
-									<span class="result-label">Romanized:</span>
-									<span class="result-value">{testOutput}</span>
-								</div>
-							{/if}
-						</div>
+						<p class="section-desc">
+							Define writing systems for your language. Each script can have its own set of glyphs
+							and romanization rules.
+						</p>
 					</Card>
 					
-					<Card title="Romanization Rules">
-						<div class="rule-list">
-							{#each romanizationRules.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)) as rule}
-								<div class="rule-item">
-									<div class="rule-mapping">
-										<span class="rule-native">{rule.nativeForm}</span>
-										<span class="rule-arrow">→</span>
-										<span class="rule-roman">{rule.romanizedForm}</span>
-									</div>
-									{#if rule.environment}
-										<span class="rule-env">/ {rule.environment}</span>
-									{/if}
-									<span class="rule-priority">Priority: {rule.priority ?? 0}</span>
-									<div class="rule-actions">
-										<Button size="sm" variant="ghost" onclick={() => openRomanizationModal(rule)}>Edit</Button>
-										<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `roman-${rule.id}`}>Delete</Button>
-									</div>
+					<div class="scripts-grid">
+						{#each scripts as script}
+							<Card>
+								<div class="script-header">
+									<h3 class="script-name">{script.name}</h3>
+									<Badge label={script.type} />
 								</div>
-							{:else}
-								<p class="empty-inline">No romanization rules defined yet.</p>
+								
+								{#if script.description}
+									<p class="script-desc">{script.description}</p>
+								{/if}
+								
+								<div class="script-meta">
+									<span class="meta-item">
+										<span class="meta-label">Direction:</span>
+										{script.direction === 'rtl' ? 'Right to Left' : 
+										 script.direction === 'ttb' ? 'Top to Bottom' : 'Left to Right'}
+									</span>
+									<span class="meta-item">
+										<span class="meta-label">Glyphs:</span>
+										{script.glyphs?.length ?? 0}
+									</span>
+								</div>
+								
+								<div class="script-actions">
+									<Button size="sm" variant="ghost" onclick={() => { selectedScriptId = script._id; activeSection = 'glyphs'; }}>
+										View Glyphs
+									</Button>
+									<Button size="sm" variant="ghost" onclick={() => openScriptModal(script)}>Edit</Button>
+									<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `script-${script._id}`}>Delete</Button>
+								</div>
+							</Card>
+						{:else}
+							<Card>
+								<p class="empty-message">No writing systems defined yet. Click "Add Script" to create one.</p>
+							</Card>
+						{/each}
+					</div>
+					
+					<Card title="Script Types Reference">
+						<div class="type-reference">
+							{#each scriptTypes as type}
+								<div class="type-item">
+									<span class="type-name">{type.label}</span>
+									<span class="type-desc">{type.description}</span>
+								</div>
 							{/each}
 						</div>
 					</Card>
-				{/if}
-			</div>
-		{/if}
-	</Tabs>
+				</div>
+			{:else if activeSection === 'glyphs'}
+				<div class="section">
+					<div class="section-header">
+						<h2>Glyphs</h2>
+						<div class="header-controls">
+							{#if scripts.length > 1}
+								<Select 
+									options={scripts.map(s => ({ value: s._id, label: s.name }))}
+									bind:value={selectedScriptId}
+								/>
+							{/if}
+							<Button variant="primary" onclick={() => openGlyphModal()} disabled={!selectedScriptId}>
+								Add Glyph
+							</Button>
+						</div>
+					</div>
+					
+					{#if !selectedScript}
+						<Card>
+							<p class="empty-message">Select a script or create one first.</p>
+						</Card>
+					{:else}
+						<Card title="{selectedScript.name} - Glyphs">
+							<div class="glyph-grid">
+								{#each glyphs.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) as glyph}
+									<button type="button" class="glyph-item" onclick={() => openGlyphModal(glyph)}>
+										{#if glyph.character}
+											<span class="glyph-char">{glyph.character}</span>
+										{:else if glyph.svgPath}
+											<svg class="glyph-svg" viewBox="0 0 100 100">
+												<path d={glyph.svgPath} fill="currentColor" />
+											</svg>
+										{:else}
+											<span class="glyph-placeholder">?</span>
+										{/if}
+										{#if glyph.phonemeMapping}
+											<span class="glyph-mapping">/{glyph.phonemeMapping}/</span>
+										{/if}
+										{#if glyph.name}
+											<span class="glyph-name">{glyph.name}</span>
+										{/if}
+									</button>
+								{:else}
+									<p class="empty-inline">No glyphs defined yet.</p>
+								{/each}
+							</div>
+						</Card>
+					{/if}
+				</div>
+			{:else if activeSection === 'romanization'}
+				<div class="section">
+					<div class="section-header">
+						<h2>Romanization Rules</h2>
+						<div class="header-controls">
+							{#if scripts.length > 1}
+								<Select 
+									options={scripts.map(s => ({ value: s._id, label: s.name }))}
+									bind:value={selectedScriptId}
+								/>
+							{/if}
+							<Button variant="primary" onclick={() => openRomanizationModal()} disabled={!selectedScriptId}>
+								Add Rule
+							</Button>
+						</div>
+					</div>
+					
+					{#if !selectedScript}
+						<Card>
+							<p class="empty-message">Select a script or create one first.</p>
+						</Card>
+					{:else}
+						<Card title="Test Romanization">
+							<div class="romanization-tester">
+								<div class="tester-row">
+									<Input 
+										bind:value={testInput} 
+										placeholder="Enter text in native script..."
+										onkeydown={(e) => e.key === 'Enter' && applyRomanization()}
+									/>
+									<Button onclick={applyRomanization}>Convert</Button>
+								</div>
+								{#if testOutput}
+									<div class="tester-result">
+										<span class="result-label">Romanized:</span>
+										<span class="result-value">{testOutput}</span>
+									</div>
+								{/if}
+							</div>
+						</Card>
+						
+						<Card title="Romanization Rules">
+							<div class="rule-list">
+								{#each romanizationRules.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)) as rule}
+									<div class="rule-item">
+										<div class="rule-mapping">
+											<span class="rule-native">{rule.nativeForm}</span>
+											<span class="rule-arrow">-></span>
+											<span class="rule-roman">{rule.romanizedForm}</span>
+										</div>
+										{#if rule.environment}
+											<span class="rule-env">/ {rule.environment}</span>
+										{/if}
+										<span class="rule-priority">Priority: {rule.priority ?? 0}</span>
+										<div class="rule-actions">
+											<Button size="sm" variant="ghost" onclick={() => openRomanizationModal(rule)}>Edit</Button>
+											<Button size="sm" variant="ghost" onclick={() => deleteConfirmId = `roman-${rule._id}`}>Delete</Button>
+										</div>
+									</div>
+								{:else}
+									<p class="empty-inline">No romanization rules defined yet.</p>
+								{/each}
+							</div>
+						</Card>
+					{/if}
+				</div>
+			{/if}
+		</Tabs>
+	{/if}
 </div>
 
 <Modal 
@@ -571,7 +602,7 @@
 		
 		<div class="form-group">
 			<label for="glyph-mapping">Phoneme Mapping <HelpTooltip key="glyphPhoneme" inline /></label>
-			<Input id="glyph-mapping" bind:value={glyphForm.phonemeMapping} placeholder="e.g. k, ka, ŋ" />
+			<Input id="glyph-mapping" bind:value={glyphForm.phonemeMapping} placeholder="e.g. k, ka, ng" />
 			<span class="form-hint">What sound(s) this glyph represents</span>
 		</div>
 		
@@ -678,6 +709,14 @@
 <style>
 	.scripts-page {
 		max-width: 1200px;
+	}
+	
+	.loading-state {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+		padding: var(--space-12);
+		color: var(--color-text-secondary);
 	}
 	
 	.section {

@@ -1,3 +1,31 @@
+# SvelteKit
 .svelte-kit
+build
+
+# Dependencies
 node_modules
+
+# Environment files
 .env
+.env.local
+.env.*.local
+
+# Convex
+convex/_generated
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build outputs
+dist

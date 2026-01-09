@@ -6,10 +6,9 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "convex:dev": "convex dev",
+    "convex:deploy": "convex deploy"
   },
   "type": "module",
   "devDependencies": {
@@ -18,14 +17,12 @@
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@types/node": "^22.10.0",
     "dotenv": "^17.2.3",
-    "drizzle-kit": "^0.30.0",
     "svelte": "^5.14.0",
     "svelte-check": "^4.1.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^0.10.0",
-    "drizzle-orm": "^0.38.0"
+    "convex": "^1.31.3"
   }
 }
