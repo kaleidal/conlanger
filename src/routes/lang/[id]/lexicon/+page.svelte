@@ -111,7 +111,7 @@
 	}
 	
 	const filteredWords = $derived.by(() => {
-		let result = words;
+		let result = [...words];
 		
 		if (searchQuery.trim()) {
 			const query = searchQuery.toLowerCase();
