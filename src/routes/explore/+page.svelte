@@ -20,7 +20,7 @@
 		}
 	});
 	
-	const filteredLanguages = $derived(() => {
+	const filteredLanguages = $derived.by(() => {
 		if (!searchQuery.trim()) return languages;
 		const query = searchQuery.toLowerCase();
 		return languages.filter(l => 
@@ -56,7 +56,7 @@
 			<div class="spinner"></div>
 			<p>Loading languages...</p>
 		</div>
-	{:else if filteredLanguages().length === 0}
+	{:else if filteredLanguages.length === 0}
 		<div class="empty-state">
 			{#if searchQuery}
 				<h2>No results found</h2>
@@ -68,7 +68,7 @@
 		</div>
 	{:else}
 		<div class="languages-grid">
-			{#each filteredLanguages() as language (language._id)}
+			{#each filteredLanguages as language (language._id)}
 				<a href="/lang/{language._id}" class="language-card">
 					<h3 class="language-name">{language.name}</h3>
 					{#if language.nativeName}

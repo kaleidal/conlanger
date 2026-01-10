@@ -161,7 +161,7 @@
 	}
 	
 	// Get consonants that don't fit in the standard grid
-	const otherConsonants = $derived(() => {
+	const otherConsonants = $derived.by(() => {
 		const gridPlaces = new Set<string>(consonantPlaces);
 		const gridManners = new Set<string>(consonantManners);
 		
@@ -594,11 +594,11 @@
 								</tbody>
 							</table>
 						</div>
-						{#if otherConsonants().length > 0}
+						{#if otherConsonants.length > 0}
 							<div class="other-phonemes">
 								<div class="other-label">Other consonants</div>
 								<div class="other-grid">
-									{#each otherConsonants() as phoneme}
+									{#each otherConsonants as phoneme}
 										<button 
 											class="phoneme-btn" 
 											onclick={() => openPhonemeModal(phoneme)}

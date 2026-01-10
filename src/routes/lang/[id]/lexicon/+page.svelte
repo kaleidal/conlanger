@@ -110,7 +110,7 @@
 		}
 	}
 	
-	const filteredWords = $derived(() => {
+	const filteredWords = $derived.by(() => {
 		let result = words;
 		
 		if (searchQuery.trim()) {
@@ -133,7 +133,7 @@
 		return result.sort((a, b) => a.lemma.localeCompare(b.lemma));
 	});
 	
-	const allTags = $derived(() => {
+	const allTags = $derived.by(() => {
 		const tagSet = new Set<string>();
 		words.forEach(w => w.tags?.forEach(t => tagSet.add(t)));
 		return Array.from(tagSet).sort();
@@ -355,9 +355,9 @@
 						options={[{ value: '', label: 'All word classes' }, ...wordClasses]}
 						bind:value={filterWordClass}
 					/>
-					{#if allTags().length > 0}
+					{#if allTags.length > 0}
 						<Select 
-							options={[{ value: '', label: 'All tags' }, ...allTags().map(t => ({ value: t, label: t }))]}
+							options={[{ value: '', label: 'All tags' }, ...allTags.map(t => ({ value: t, label: t }))]}
 							bind:value={filterTag}
 						/>
 					{/if}
@@ -366,7 +366,7 @@
 		</Card>
 		
 		<div class="word-list">
-			{#each filteredWords() as word}
+			{#each filteredWords as word}
 				<Card>
 					<div class="word-header">
 						<div class="word-title">

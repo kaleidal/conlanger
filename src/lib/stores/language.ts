@@ -93,22 +93,33 @@ function createLanguageStore() {
 		update,
 		
 		async load(id: string) {
-			const userId = getUserId();
-			const language = await runQuery<Language>('languages:getLanguage', { 
-				languageId: id,
-				userId 
-			});
-			set(language);
+			if (!id) {
+				set(null);
+				return null;
+			}
 			
-			// Set up real-time subscription
-			if (unsubscribe) unsubscribe();
-			unsubscribe = convex.onUpdate(
-				'languages:getLanguage' as any,
-				{ languageId: id, userId },
-				(result: Language) => set(result)
-			);
-			
-			return language;
+			try {
+				const userId = getUserId();
+				const language = await runQuery<Language>('languages:getLanguage', { 
+					languageId: id,
+					userId 
+				});
+				set(language);
+				
+				// Set up real-time subscription
+				if (unsubscribe) unsubscribe();
+				unsubscribe = convex.onUpdate(
+					'languages:getLanguage' as any,
+					{ languageId: id, userId },
+					(result: Language) => set(result)
+				);
+				
+				return language;
+			} catch (e) {
+				console.error('Failed to load language:', e);
+				set(null);
+				return null;
+			}
 		},
 		
 		async save(updates: Partial<Language>) {

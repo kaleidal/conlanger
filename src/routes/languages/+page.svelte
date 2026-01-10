@@ -53,7 +53,7 @@
 		}
 	}
 	
-	const filteredLanguages = $derived(() => {
+	const filteredLanguages = $derived.by(() => {
 		const langs = $languages;
 		if (filter === 'owned') {
 			return langs.filter(l => l.role === 'owner');
@@ -112,7 +112,7 @@
 	</div>
 	
 	<div class="languages-list">
-		{#each filteredLanguages() as language (language._id)}
+		{#each filteredLanguages as language (language._id)}
 			<a href="/lang/{language._id}" class="language-card">
 				<div class="language-card-content">
 					<div class="language-header">
