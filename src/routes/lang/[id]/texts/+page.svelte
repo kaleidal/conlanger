@@ -108,12 +108,12 @@
 			};
 			
 			if (editingText) {
-				await runMutation('texts:update', {
-					id: editingText._id,
+				await runMutation('texts:updateText', {
+					textId: editingText._id,
 					...payload
 				});
 			} else {
-				const newId = await runMutation<string>('texts:create', payload);
+				const newId = await runMutation<string>('texts:createText', payload);
 				selectedTextId = newId;
 			}
 			
@@ -125,8 +125,8 @@
 	}
 	
 	async function deleteText(id: string) {
-		await runMutation('texts:remove', { 
-			id,
+		await runMutation('texts:deleteText', { 
+			textId: id,
 			userId: getUserId()
 		});
 		if (selectedTextId === id) {
@@ -184,8 +184,8 @@
 				updatedData.push(newLine);
 			}
 			
-			await runMutation('texts:update', {
-				id: selectedText._id,
+			await runMutation('texts:updateText', {
+				textId: selectedText._id,
 				languageId,
 				userId: getUserId(),
 				title: selectedText.title,
@@ -208,8 +208,8 @@
 		
 		const updatedData = selectedText.interlinearData?.filter((_, i) => i !== index) ?? [];
 		
-		await runMutation('texts:update', {
-			id: selectedText._id,
+		await runMutation('texts:updateText', {
+			textId: selectedText._id,
 			languageId,
 			userId: getUserId(),
 			title: selectedText.title,

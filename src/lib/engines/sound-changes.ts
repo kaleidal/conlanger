@@ -55,7 +55,14 @@ export class SoundChangeEngine {
 	}
 	
 	private expandPattern(pattern: string): RegExp {
+		if (!pattern || pattern.trim() === '') {
+			return new RegExp('(?!)', 'g');
+		}
+		
 		let expanded = pattern;
+		
+		expanded = expanded.replace(/\(([^)]+)\)/g, '(?:$1)?');
+		expanded = expanded.replace(/\{([^}]+)\}/g, '[$1]');
 		
 		expanded = expanded.replace(/#/g, '(?:^|$|\\s)');
 		
@@ -64,10 +71,12 @@ export class SoundChangeEngine {
 			expanded = expanded.replace(new RegExp(className, 'g'), `(?:${soundList})`);
 		}
 		
-		expanded = expanded.replace(/\(([^)]+)\)/g, '(?:$1)?');
-		expanded = expanded.replace(/\{([^}]+)\}/g, '[$1]');
-		
-		return new RegExp(expanded, 'g');
+		try {
+			return new RegExp(expanded, 'g');
+		} catch {
+			console.warn('Invalid regex pattern:', pattern, 'expanded to:', expanded);
+			return new RegExp('(?!)', 'g');
+		}
 	}
 	
 	private parseEnvironment(environment: string): { before: string; after: string } {

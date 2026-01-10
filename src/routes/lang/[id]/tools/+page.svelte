@@ -70,12 +70,12 @@
 		loading = true;
 		try {
 			const [phonemesData, wordsData, soundChangesData, categoriesData, morphemesData, classesData] = await Promise.all([
-				runQuery<Phoneme[]>('phonology:listPhonemes', { languageId }),
-				runQuery<Word[]>('lexicon:listWords', { languageId }),
-				runQuery<SoundChange[]>('phonology:listSoundChanges', { languageId }),
-				runQuery<GrammarCategory[]>('morphology:listGrammarCategories', { languageId }),
-				runQuery<Morpheme[]>('morphology:listMorphemes', { languageId }),
-				runQuery<InflectionClass[]>('morphology:listInflectionClasses', { languageId })
+				runQuery<Phoneme[]>('phonology:getPhonemes', { languageId }),
+				runQuery<Word[]>('lexicon:getWords', { languageId }),
+				runQuery<SoundChange[]>('phonology:getSoundChanges', { languageId }),
+				runQuery<GrammarCategory[]>('morphology:getGrammarCategories', { languageId }),
+				runQuery<Morpheme[]>('morphology:getMorphemes', { languageId }),
+				runQuery<InflectionClass[]>('morphology:getInflectionClasses', { languageId })
 			]);
 			phonemes = phonemesData ?? [];
 			words = wordsData ?? [];
@@ -694,7 +694,7 @@
 						
 						<Card title="Select Rules">
 							<div class="select-list">
-								{#each soundChanges.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule}
+								{#each [...soundChanges].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule}
 									<div class="select-item">
 										<Checkbox 
 											checked={scBatchSettings.selectedRules.includes(rule._id)}
@@ -1128,22 +1128,22 @@
 	}
 	
 	.word-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+		display: flex;
+		flex-wrap: wrap;
 		gap: var(--space-2);
 	}
 	
 	.generated-word {
-		padding: var(--space-3);
+		padding: var(--space-2) var(--space-3);
 		background: var(--color-bg-tertiary);
 		border: 2px solid transparent;
 		border-radius: var(--radius-md);
 		font-family: monospace;
 		font-size: var(--size-md);
 		color: var(--color-text);
-		text-align: center;
 		cursor: pointer;
 		transition: all var(--transition-fast);
+		white-space: nowrap;
 	}
 	
 	.generated-word:hover {

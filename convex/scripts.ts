@@ -334,6 +334,43 @@ export const createRomanizationRule = mutation({
   },
 });
 
+export const updateRomanizationRule = mutation({
+  args: {
+    ruleId: v.id("romanizationRules"),
+    userId: v.id("users"),
+    nativeForm: v.optional(v.string()),
+    romanizedForm: v.optional(v.string()),
+    environment: v.optional(v.union(v.string(), v.null())),
+    priority: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const rule = await ctx.db.get(args.ruleId);
+    if (!rule) throw new Error("Rule not found");
+
+    const script = await ctx.db.get(rule.scriptId);
+    if (!script) throw new Error("Script not found");
+
+    const { ruleId, userId, ...updates } = args;
+    const filteredUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([_, v]) => v !== undefined)
+    );
+
+    await ctx.db.patch(ruleId, filteredUpdates);
+
+    await ctx.db.insert("activityLog", {
+      languageId: script.languageId,
+      userId,
+      action: "update",
+      entityType: "romanizationRule",
+      entityId: ruleId,
+      details: `Updated romanization rule`,
+      timestamp: Date.now(),
+    });
+
+    await ctx.db.patch(script.languageId, { updatedAt: Date.now() });
+  },
+});
+
 export const deleteRomanizationRule = mutation({
   args: {
     ruleId: v.id("romanizationRules"),
@@ -357,6 +394,7 @@ export const deleteRomanizationRule = mutation({
       details: `Deleted romanization rule`,
       timestamp: Date.now(),
     });
+
 
     await ctx.db.patch(script.languageId, { updatedAt: Date.now() });
   },

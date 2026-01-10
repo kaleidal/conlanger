@@ -807,7 +807,7 @@
 					
 					<Card title="Sound Change Rules">
 						<div class="sound-change-list">
-							{#each soundChanges.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule, index}
+							{#each [...soundChanges].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule, index}
 								<div class="sound-change-item" class:inactive={!rule.isActive}>
 									<div class="sound-change-header">
 										<span class="sound-change-order">{index + 1}.</span>

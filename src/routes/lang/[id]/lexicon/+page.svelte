@@ -275,7 +275,7 @@
 		
 		saving = true;
 		try {
-			await runMutation('lexicon:createWordRelation', {
+			await runMutation('lexicon:createWordRelationship', {
 				userId: getUserId(),
 				fromWordId: selectedWordForRelation._id,
 				toWordId: newRelation.toWordId,

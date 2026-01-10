@@ -81,8 +81,8 @@
 		loading = true;
 		try {
 			const [rulesData, langData] = await Promise.all([
-				runQuery<SyntaxRule[]>('syntax:list', { languageId }),
-				runQuery<Language>('languages:get', { id: languageId })
+				runQuery<SyntaxRule[]>('syntax:getSyntaxRules', { languageId }),
+				runQuery<Language>('languages:getLanguage', { languageId })
 			]);
 			syntaxRules = rulesData ?? [];
 			language = langData;
@@ -185,8 +185,8 @@
 	async function saveSettings() {
 		settingsSaving = true;
 		try {
-			await runMutation('languages:update', { 
-				id: languageId, 
+			await runMutation('languages:updateLanguage', { 
+				languageId, 
 				userId: getUserId(),
 				settings: localSettings as Record<string, unknown>
 			});
@@ -265,12 +265,12 @@
 			};
 			
 			if (editingRule) {
-				await runMutation('syntax:update', {
-					id: editingRule._id,
+				await runMutation('syntax:updateSyntaxRule', {
+					ruleId: editingRule._id,
 					...payload
 				});
 			} else {
-				await runMutation('syntax:create', payload);
+				await runMutation('syntax:createSyntaxRule', payload);
 			}
 			
 			await loadData();
@@ -464,7 +464,7 @@
 				</Card>
 				
 				<div class="rules-list">
-					{#each syntaxRules.sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule, index}
+					{#each [...syntaxRules].sort((a, b) => (a.orderIndex ?? 0) - (b.orderIndex ?? 0)) as rule, index}
 						<Card>
 							<div class="rule-header">
 								<span class="rule-order">{index + 1}.</span>

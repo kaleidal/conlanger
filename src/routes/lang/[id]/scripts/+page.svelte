@@ -444,7 +444,7 @@
 					{:else}
 						<Card title="{selectedScript.name} - Glyphs">
 							<div class="glyph-grid">
-								{#each glyphs.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) as glyph}
+								{#each [...glyphs].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) as glyph}
 									<button type="button" class="glyph-item" onclick={() => openGlyphModal(glyph)}>
 										{#if glyph.character}
 											<span class="glyph-char">{glyph.character}</span>
@@ -512,7 +512,7 @@
 						
 						<Card title="Romanization Rules">
 							<div class="rule-list">
-								{#each romanizationRules.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)) as rule}
+								{#each [...romanizationRules].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0)) as rule}
 									<div class="rule-item">
 										<div class="rule-mapping">
 											<span class="rule-native">{rule.nativeForm}</span>
