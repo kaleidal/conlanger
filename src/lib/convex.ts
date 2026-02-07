@@ -110,6 +110,14 @@ export async function runMutation<T>(
   return await convex.mutation(mutationName as any, args);
 }
 
+// Helper to run actions
+export async function runAction<T>(
+  actionName: string,
+  args: Record<string, unknown>
+): Promise<T> {
+  return await convex.action(actionName as any, args);
+}
+
 // Helper to run queries (one-time)
 export async function runQuery<T>(
   queryName: string,

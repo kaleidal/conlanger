@@ -1,28 +1,45 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { handleAveCallback, isAveCallback } from '$lib/auth/ave';
-	import { auth, runMutation } from '$lib/convex';
-	
+	import { clearAveOAuthState, handleAveCallback, isAveCallback } from '$lib/auth/ave';
+	import { auth, runAction, runMutation } from '$lib/convex';
+
 	let error = $state('');
 	let loading = $state(true);
-	
+
+	interface AveExchangeResult {
+		id: string;
+		handle: string;
+		displayName: string;
+		email: string | null;
+		avatarUrl: string | null;
+		accessToken: string;
+	}
+
 	onMount(async () => {
 		if (!isAveCallback()) {
 			goto('/');
 			return;
 		}
-		
+
 		try {
 			const redirectUri = `${window.location.origin}/callback`;
-			const aveUser = await handleAveCallback(redirectUri);
-			
-			if (!aveUser) {
+			const callbackPayload = await handleAveCallback();
+
+			if (!callbackPayload) {
+				clearAveOAuthState();
 				error = 'Authentication failed. Please try again.';
 				loading = false;
 				return;
 			}
-			
+
+			const aveUser = await runAction<AveExchangeResult>('auth:exchangeAveCode', {
+				code: callbackPayload.code,
+				codeVerifier: callbackPayload.codeVerifier,
+				redirectUri
+			});
+			clearAveOAuthState();
+
 			// Create or update user in Convex
 			const userId = await runMutation<string>('auth:upsertUser', {
 				aveId: aveUser.id,
@@ -31,17 +48,17 @@
 				email: aveUser.email,
 				avatarUrl: aveUser.avatarUrl
 			});
-			
+
 			// Create session
 			const token = crypto.randomUUID();
 			const expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
-			
+
 			await runMutation('auth:createSession', {
 				userId,
 				token,
 				expiresAt
 			});
-			
+
 			// Set auth state
 			auth.setUser({
 				_id: userId,
@@ -51,11 +68,12 @@
 				email: aveUser.email ?? undefined,
 				avatarUrl: aveUser.avatarUrl ?? undefined
 			}, token);
-			
+
 			// Redirect to dashboard
 			goto('/languages');
 		} catch (e) {
 			console.error('Callback error:', e);
+			clearAveOAuthState();
 			error = 'An error occurred during authentication.';
 			loading = false;
 		}

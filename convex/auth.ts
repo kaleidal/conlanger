@@ -1,5 +1,60 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { action, mutation, query } from "./_generated/server";
+
+const AVE_TOKEN_URL = "https://api.aveid.net/api/oauth/token";
+const DEFAULT_AVE_CLIENT_ID = "app_410708d4acd03edd8eeb8a8eb88ecfe7";
+
+// Exchange OAuth authorization code for Ave user profile + token.
+export const exchangeAveCode = action({
+  args: {
+    code: v.string(),
+    codeVerifier: v.string(),
+    redirectUri: v.string(),
+  },
+  handler: async (_ctx, args) => {
+    const clientId = process.env.VITE_AVE_CLIENT_ID ?? DEFAULT_AVE_CLIENT_ID;
+    const response = await fetch(AVE_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        grantType: "authorization_code",
+        code: args.code,
+        redirectUri: args.redirectUri,
+        clientId,
+        codeVerifier: args.codeVerifier,
+      }),
+    });
+
+    const rawBody = await response.text();
+    let payload: any = null;
+    try {
+      payload = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      const details =
+        (payload && (payload.message || payload.error || payload.detail)) || rawBody || "Unknown error";
+      throw new Error(`Ave token exchange failed (${response.status}): ${details}`);
+    }
+
+    const user = payload?.user;
+    const accessToken = payload?.access_token;
+    if (!user?.id || !user?.handle || !user?.displayName || !accessToken) {
+      throw new Error("Ave token response missing required fields.");
+    }
+
+    return {
+      id: user.id as string,
+      handle: user.handle as string,
+      displayName: user.displayName as string,
+      email: (user.email as string | null | undefined) ?? null,
+      avatarUrl: (user.avatarUrl as string | null | undefined) ?? null,
+      accessToken: accessToken as string,
+    };
+  },
+});
 
 // Get current user from session token
 export const getCurrentUser = query({

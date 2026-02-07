@@ -1,7 +1,6 @@
 // Ave OAuth PKCE Authentication for Conlanger
 
 const AVE_AUTH_URL = 'https://aveid.net/authorize';
-const AVE_TOKEN_URL = 'https://api.aveid.net/api/oauth/token';
 const CLIENT_ID = import.meta.env.VITE_AVE_CLIENT_ID || 'app_410708d4acd03edd8eeb8a8eb88ecfe7';
 
 // Generate random string for PKCE
@@ -60,8 +59,8 @@ export async function startAveLogin(redirectUri: string): Promise<void> {
   window.location.href = `${AVE_AUTH_URL}?${params.toString()}`;
 }
 
-// Handle the OAuth callback
-export async function handleAveCallback(redirectUri: string): Promise<AveUser | null> {
+// Handle callback validation; token exchange is done server-side in Convex.
+export async function handleAveCallback(): Promise<AveCallbackPayload | null> {
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
   const state = params.get('state');
@@ -89,60 +88,25 @@ export async function handleAveCallback(redirectUri: string): Promise<AveUser | 
     return null;
   }
 
-  try {
-    // Exchange code for token - NOTE: Use camelCase field names!
-    const response = await fetch(AVE_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grantType: 'authorization_code',
-        code: code,
-        redirectUri: redirectUri,
-        clientId: CLIENT_ID,
-        codeVerifier: codeVerifier
-      })
-    });
+  return {
+    code,
+    codeVerifier
+  };
+}
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('Token exchange failed:', errorData);
-      return null;
-    }
+export function clearAveOAuthState(): void {
+  sessionStorage.removeItem('ave_code_verifier');
+  sessionStorage.removeItem('ave_oauth_state');
+  window.history.replaceState({}, document.title, window.location.pathname);
+}
 
-    const data = await response.json();
-
-    // Clean up
-    sessionStorage.removeItem('ave_code_verifier');
-    sessionStorage.removeItem('ave_oauth_state');
-
-    // Clean URL
-    window.history.replaceState({}, document.title, window.location.pathname);
-
-    return {
-      id: data.user.id,
-      handle: data.user.handle,
-      displayName: data.user.displayName,
-      email: data.user.email || null,
-      avatarUrl: data.user.avatarUrl || null,
-      accessToken: data.access_token
-    };
-  } catch (error) {
-    console.error('Ave callback error:', error);
-    return null;
-  }
+export interface AveCallbackPayload {
+  code: string;
+  codeVerifier: string;
 }
 
 // Check if this is a callback URL
 export function isAveCallback(): boolean {
   const params = new URLSearchParams(window.location.search);
   return params.has('code') && params.has('state');
-}
-
-export interface AveUser {
-  id: string;
-  handle: string;
-  displayName: string;
-  email: string | null;
-  avatarUrl: string | null;
-  accessToken: string;
 }
