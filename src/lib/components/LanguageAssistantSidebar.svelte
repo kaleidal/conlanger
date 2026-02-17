@@ -30,7 +30,6 @@
   let error = $state<string | null>(null);
   let connectorLoading = $state(true);
   let connectorConnected = $state(false);
-  let connectorMode = $state<"user_present" | "background">("user_present");
   let toolSummary = $state<string[]>([]);
   let chatBody: HTMLDivElement | null = null;
 
@@ -49,20 +48,19 @@
         resource: "iris:inference",
       });
       connectorConnected = !!grant;
-      connectorMode = (grant?.mode ?? "user_present") as "user_present" | "background";
     } finally {
       connectorLoading = false;
     }
   }
 
-  async function connect(mode: "user_present" | "background") {
+  async function connect() {
     const returnTo = window.location.pathname + window.location.search;
     const redirectUri = `${window.location.origin}/connector/callback`;
     await startAveConnectorFlow({
       redirectUri,
       resource: "iris:inference",
       scope: "iris.infer",
-      mode,
+      mode: "user_present",
       returnTo,
     });
   }
@@ -134,38 +132,35 @@
 
   <div class="assistant-body" bind:this={chatBody}>
     {#if connectorLoading}
-      <div class="connect-card muted">
+      <div class="connect-card muted centered">
         <p>Checking Iris connector...</p>
       </div>
     {:else if !connectorConnected}
-      <div class="connect-card">
+      <div class="connect-card centered">
         <h3>Connect Conlanger to Iris</h3>
         <p>Authorize Conlanger to use Iris delegated inference before chatting.</p>
         <div class="connect-actions">
-          <Button size="sm" variant="primary" onclick={() => connect("user_present")}>
-            Connect (user present)
-          </Button>
-          <Button size="sm" variant="secondary" onclick={() => connect("background")}>
-            Connect (background)
+          <Button size="sm" variant="primary" onclick={connect}>
+            Connect to Iris
           </Button>
         </div>
       </div>
     {:else}
       <div class="connect-card connected">
-        <p>Connected to Iris ({connectorMode === "background" ? "background" : "user present"})</p>
+        <p>Connected to Iris</p>
         <Button size="sm" variant="ghost" onclick={disconnect}>Disconnect</Button>
       </div>
-    {/if}
 
-    {#each messages as msg}
-      <div class="msg {msg.role}">
-        <span class="msg-role">{msg.role === "user" ? "You" : "Assistant"}</span>
-        <p>{msg.content}</p>
-      </div>
-    {/each}
+      {#each messages as msg}
+        <div class="msg {msg.role}">
+          <span class="msg-role">{msg.role === "user" ? "You" : "Assistant"}</span>
+          <p>{msg.content}</p>
+        </div>
+      {/each}
+    {/if}
   </div>
 
-  {#if toolSummary.length > 0}
+  {#if connectorConnected && toolSummary.length > 0}
     <div class="tool-strip">
       {#each toolSummary.slice(-6) as item}
         <span>{item}</span>
@@ -173,31 +168,32 @@
     </div>
   {/if}
 
-  {#if error}
+  {#if connectorConnected && error}
     <p class="error">{error}</p>
   {/if}
 
-  <div class="assistant-input">
-    <div class="model-row">
-      <label for="assistant-model">Model</label>
-      <input id="assistant-model" bind:value={model} placeholder="anthropic/claude-sonnet-4.5" />
+  {#if connectorConnected}
+    <div class="assistant-input">
+      <div class="model-row">
+        <label for="assistant-model">Model</label>
+        <input id="assistant-model" bind:value={model} placeholder="anthropic/claude-sonnet-4.5" />
+      </div>
+      <textarea
+        bind:value={prompt}
+        placeholder={canWrite ? "Ask and I can apply edits directly..." : "Ask about this language..."}
+        rows="3"
+        onkeydown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+      ></textarea>
+      <Button variant="primary" onclick={send} loading={sending} disabled={!prompt.trim()}>
+        Send
+      </Button>
     </div>
-    <textarea
-      bind:value={prompt}
-      placeholder={connectorConnected ? (canWrite ? "Ask and I can apply edits directly..." : "Ask about this language...") : "Connect Iris first to start chatting"}
-      rows="3"
-      disabled={!connectorConnected}
-      onkeydown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          send();
-        }
-      }}
-    ></textarea>
-    <Button variant="primary" onclick={send} loading={sending} disabled={!prompt.trim() || !connectorConnected}>
-      Send
-    </Button>
-  </div>
+  {/if}
 </aside>
 
 <style>
@@ -208,9 +204,7 @@
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--color-border);
-    background:
-      radial-gradient(1200px 420px at 100% -10%, rgba(108, 90, 255, 0.16), transparent 50%),
-      var(--color-bg-secondary);
+    background: var(--color-bg-secondary);
   }
 
   .assistant-header {
@@ -266,6 +260,11 @@
     background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-primary));
   }
 
+  .connect-card.centered {
+    margin: auto 0;
+    text-align: center;
+  }
+
   .connect-card h3 {
     margin: 0 0 var(--space-1);
     font-size: var(--size-sm);
@@ -293,7 +292,7 @@
     display: flex;
     gap: var(--space-2);
     margin-top: var(--space-3);
-    flex-wrap: wrap;
+    justify-content: center;
   }
 
   .msg {
