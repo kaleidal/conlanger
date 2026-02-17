@@ -2,8 +2,8 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
 	import { currentLanguage, presence, activityLog } from '$lib/stores';
-	import { sessionId, getUserId, user, isAuthenticated } from '$lib/convex';
-	import { onMount, onDestroy } from 'svelte';
+	import { sessionId, getUserId, isAuthenticated, isLoading } from '$lib/convex';
+	import { onDestroy } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import PresenceBar from '$lib/components/PresenceBar.svelte';
 	import ActivityFeed from '$lib/components/ActivityFeed.svelte';
@@ -32,14 +32,41 @@
 		{ href: `/lang/${languageId}/tools`, label: 'Tools' }
 	]);
 	
-	onMount(async () => {
-		await currentLanguage.load(languageId);
-		
-		// Start presence tracking if authenticated
+	let startedRealtime = $state(false);
+	let loadKey = $state<string | null>(null);
+	let realtimeLanguageId = $state<string | null>(null);
+
+	async function loadLanguageIfReady() {
+		const id = languageId;
+		if (!id || $isLoading) return;
+
+		const key = `${id}:${$isAuthenticated ? 'auth' : 'anon'}`;
+		if (loadKey === key) return;
+		loadKey = key;
+
+		await currentLanguage.load(id);
+
 		if ($isAuthenticated) {
-			presence.start(languageId, sessionId);
-			activityLog.start(languageId);
+			if (realtimeLanguageId !== id) {
+				if (startedRealtime) {
+					presence.stop(sessionId);
+					activityLog.stop();
+				}
+				presence.start(id, sessionId);
+				activityLog.start(id);
+				startedRealtime = true;
+				realtimeLanguageId = id;
+			}
+		} else if (startedRealtime) {
+			presence.stop(sessionId);
+			activityLog.stop();
+			startedRealtime = false;
+			realtimeLanguageId = null;
 		}
+	}
+
+	$effect(() => {
+		loadLanguageIfReady();
 	});
 	
 	onDestroy(() => {
@@ -100,11 +127,10 @@
 				onclick={() => showAssistant = !showAssistant}
 				title="Language Assistant"
 			>
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<rect x="4" y="4" width="16" height="13" rx="3"></rect>
-					<path d="M9 21l3-4 3 4"></path>
-					<circle cx="9" cy="10" r="1"></circle>
-					<circle cx="15" cy="10" r="1"></circle>
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M8 9h8"></path>
+					<path d="M8 13h5"></path>
+					<path d="M17 3H7a4 4 0 0 0-4 4v8a4 4 0 0 0 4 4h5l4 3v-3h1a4 4 0 0 0 4-4V7a4 4 0 0 0-4-4Z"></path>
 				</svg>
 			</button>
 			<button 
@@ -168,7 +194,9 @@
 	.language-layout {
 		display: flex;
 		flex-direction: column;
+		height: calc(100vh - 61px);
 		min-height: calc(100vh - 60px);
+		overflow: hidden;
 	}
 	
 	.language-header {
