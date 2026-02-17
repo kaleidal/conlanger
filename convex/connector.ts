@@ -92,6 +92,8 @@ export const getLanguageContext = query({
     const language = await ctx.db.get(args.languageId);
     if (!language) throw new Error("Language not found.");
 
+    let canWrite = language.ownerId === args.userId;
+
     if (language.ownerId !== args.userId) {
       const collab = await ctx.db
         .query("collaborators")
@@ -99,20 +101,26 @@ export const getLanguageContext = query({
           q.eq("languageId", args.languageId).eq("userId", args.userId),
         )
         .first();
-      if (!collab) throw new Error("You don't have access to this language.");
+      if (!collab && !language.isPublic) throw new Error("You don't have access to this language.");
+      if (collab?.role === "editor") canWrite = true;
     }
 
     const words = await ctx.db
       .query("words")
       .withIndex("by_language", (q) => q.eq("languageId", args.languageId))
-      .take(60);
+      .take(240);
 
     return {
       language: {
+        id: language._id,
         name: language.name,
         nativeName: language.nativeName,
+        description: language.description,
+        isPublic: language.isPublic,
       },
+      canWrite,
       words: words.map((w) => ({
+        _id: w._id,
         lemma: w.lemma,
         ipa: w.ipa,
         wordClass: w.wordClass,

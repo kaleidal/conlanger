@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { Button } from "$lib/components/ui";
-  import { getUserId, runAction } from "$lib/convex";
+  import { getUserId, runAction, runMutation, runQuery } from "$lib/convex";
+  import { startAveConnectorFlow } from "$lib/auth/connector";
 
   interface Props {
     languageId: string;
@@ -27,8 +28,54 @@
   let model = $state("anthropic/claude-sonnet-4.5");
   let sending = $state(false);
   let error = $state<string | null>(null);
+  let connectorLoading = $state(true);
+  let connectorConnected = $state(false);
+  let connectorMode = $state<"user_present" | "background">("user_present");
   let toolSummary = $state<string[]>([]);
   let chatBody: HTMLDivElement | null = null;
+
+  async function loadConnectorStatus() {
+    const userId = getUserId();
+    if (!userId) {
+      connectorLoading = false;
+      connectorConnected = false;
+      return;
+    }
+
+    connectorLoading = true;
+    try {
+      const grant = await runQuery<any>("connector:getConnectorGrant", {
+        userId,
+        resource: "iris:inference",
+      });
+      connectorConnected = !!grant;
+      connectorMode = (grant?.mode ?? "user_present") as "user_present" | "background";
+    } finally {
+      connectorLoading = false;
+    }
+  }
+
+  async function connect(mode: "user_present" | "background") {
+    const returnTo = window.location.pathname + window.location.search;
+    const redirectUri = `${window.location.origin}/connector/callback`;
+    await startAveConnectorFlow({
+      redirectUri,
+      resource: "iris:inference",
+      scope: "iris.infer",
+      mode,
+      returnTo,
+    });
+  }
+
+  async function disconnect() {
+    const userId = getUserId();
+    if (!userId) return;
+    await runMutation("connector:disconnectConnectorGrant", {
+      userId,
+      resource: "iris:inference",
+    });
+    connectorConnected = false;
+  }
 
   async function scrollToBottom() {
     await tick();
@@ -40,7 +87,7 @@
   async function send() {
     const text = prompt.trim();
     const userId = getUserId();
-    if (!text || sending || !userId) return;
+    if (!text || sending || !userId || !connectorConnected) return;
 
     error = null;
     sending = true;
@@ -71,6 +118,7 @@
   }
 
   onMount(scrollToBottom);
+  onMount(loadConnectorStatus);
 </script>
 
 <aside class="assistant-panel">
@@ -85,6 +133,30 @@
   </div>
 
   <div class="assistant-body" bind:this={chatBody}>
+    {#if connectorLoading}
+      <div class="connect-card muted">
+        <p>Checking Iris connector...</p>
+      </div>
+    {:else if !connectorConnected}
+      <div class="connect-card">
+        <h3>Connect Conlanger to Iris</h3>
+        <p>Authorize Conlanger to use Iris delegated inference before chatting.</p>
+        <div class="connect-actions">
+          <Button size="sm" variant="primary" onclick={() => connect("user_present")}>
+            Connect (user present)
+          </Button>
+          <Button size="sm" variant="secondary" onclick={() => connect("background")}>
+            Connect (background)
+          </Button>
+        </div>
+      </div>
+    {:else}
+      <div class="connect-card connected">
+        <p>Connected to Iris ({connectorMode === "background" ? "background" : "user present"})</p>
+        <Button size="sm" variant="ghost" onclick={disconnect}>Disconnect</Button>
+      </div>
+    {/if}
+
     {#each messages as msg}
       <div class="msg {msg.role}">
         <span class="msg-role">{msg.role === "user" ? "You" : "Assistant"}</span>
@@ -112,8 +184,9 @@
     </div>
     <textarea
       bind:value={prompt}
-      placeholder={canWrite ? "Ask and I can apply edits directly..." : "Ask about this language..."}
+      placeholder={connectorConnected ? (canWrite ? "Ask and I can apply edits directly..." : "Ask about this language...") : "Connect Iris first to start chatting"}
       rows="3"
+      disabled={!connectorConnected}
       onkeydown={(e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
@@ -121,7 +194,7 @@
         }
       }}
     ></textarea>
-    <Button variant="primary" onclick={send} loading={sending} disabled={!prompt.trim()}>
+    <Button variant="primary" onclick={send} loading={sending} disabled={!prompt.trim() || !connectorConnected}>
       Send
     </Button>
   </div>
@@ -178,11 +251,49 @@
 
   .assistant-body {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: var(--space-4);
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
+  }
+
+  .connect-card {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-primary));
+  }
+
+  .connect-card h3 {
+    margin: 0 0 var(--space-1);
+    font-size: var(--size-sm);
+  }
+
+  .connect-card p {
+    margin: 0;
+    color: var(--color-text-secondary);
+    font-size: var(--size-xs);
+  }
+
+  .connect-card.connected {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    background: color-mix(in srgb, var(--color-success) 14%, var(--color-bg-primary));
+  }
+
+  .connect-card.muted {
+    background: var(--color-bg-tertiary);
+  }
+
+  .connect-actions {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    flex-wrap: wrap;
   }
 
   .msg {

@@ -101,7 +101,10 @@
 				title="Language Assistant"
 			>
 				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M12 3l1.8 3.8L18 8.6l-3 2.9.7 4.2L12 13.8 8.3 15.7l.7-4.2-3-2.9 4.2-1.8L12 3z"></path>
+					<rect x="4" y="4" width="16" height="13" rx="3"></rect>
+					<path d="M9 21l3-4 3 4"></path>
+					<circle cx="9" cy="10" r="1"></circle>
+					<circle cx="15" cy="10" r="1"></circle>
 				</svg>
 			</button>
 			<button 
@@ -309,10 +312,13 @@
 	.language-body {
 		display: flex;
 		flex: 1;
+		min-height: 0;
+		overflow: hidden;
 	}
 	
 	.language-content {
 		flex: 1;
+		min-height: 0;
 		padding: var(--space-8) var(--space-6);
 		display: flex;
 		justify-content: center;

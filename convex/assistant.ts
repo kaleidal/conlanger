@@ -86,38 +86,22 @@ function definitionsToObjects(defs?: string[]) {
 }
 
 async function ensureLanguageAccess(ctx: any, args: { languageId: string; userId: string }) {
-  const language = await ctx.db.get(args.languageId as any);
-  if (!language) throw new Error("Language not found.");
-
-  let canRead = false;
-  let canWrite = false;
-
-  if (language.ownerId === args.userId) {
-    canRead = true;
-    canWrite = true;
-  } else if (language.isPublic) {
-    canRead = true;
+  const context = await ctx.runQuery(api.connector.getLanguageContext, {
+    languageId: args.languageId as any,
+    userId: args.userId as any,
+  });
+  if (!context?.language) {
+    throw new Error("Language not found.");
   }
-
-  const collab = await ctx.db
-    .query("collaborators")
-    .withIndex("by_language_user", (q: any) =>
-      q.eq("languageId", args.languageId).eq("userId", args.userId),
-    )
-    .first();
-
-  if (collab) {
-    canRead = true;
-    if (collab.role === "editor") canWrite = true;
-  }
-
-  if (!canRead) throw new Error("You don't have access to this language.");
-  return { language, canWrite };
+  return { language: context.language, canWrite: !!context.canWrite };
 }
 
-async function loadSnapshot(ctx: any, languageId: string) {
-  const [language, words, phonemes, morphemes, syntaxRules] = await Promise.all([
-    ctx.db.get(languageId as any),
+async function loadSnapshot(ctx: any, languageId: string, userId: string) {
+  const [languageContext, words, phonemes, morphemes, syntaxRules] = await Promise.all([
+    ctx.runQuery(api.connector.getLanguageContext, {
+      languageId: languageId as any,
+      userId: userId as any,
+    }),
     ctx.runQuery(api.lexicon.getWords, { languageId: languageId as any }),
     ctx.runQuery(api.phonology.getPhonemes, { languageId: languageId as any }),
     ctx.runQuery(api.morphology.getMorphemes, { languageId: languageId as any }),
@@ -125,13 +109,13 @@ async function loadSnapshot(ctx: any, languageId: string) {
   ]);
 
   return {
-    language: language
+    language: languageContext?.language
       ? {
-          id: language._id,
-          name: language.name,
-          nativeName: language.nativeName,
-          description: language.description,
-          isPublic: language.isPublic,
+          id: languageContext.language.id,
+          name: languageContext.language.name,
+          nativeName: languageContext.language.nativeName,
+          description: languageContext.language.description,
+          isPublic: languageContext.language.isPublic,
         }
       : null,
     counts: {
@@ -309,7 +293,7 @@ async function runTool(
 
     switch (toolName) {
       case "get_full_snapshot": {
-        const snapshot = await loadSnapshot(ctx, context.languageId);
+        const snapshot = await loadSnapshot(ctx, context.languageId, context.userId);
         return { tool: toolName, ok: true, result: snapshot };
       }
       case "search_words": {
@@ -426,7 +410,7 @@ export const chat = action({
     });
 
     const delegatedToken = await ensureDelegatedGrant(ctx, args.userId as any);
-    const snapshot = await loadSnapshot(ctx, args.languageId as any);
+    const snapshot = await loadSnapshot(ctx, args.languageId as any, args.userId as any);
     const systemPrompt = buildSystemPrompt(
       {
         id: language._id,
