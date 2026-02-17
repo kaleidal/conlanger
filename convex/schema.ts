@@ -197,6 +197,21 @@ export default defineSchema({
     .index("by_token", ["token"])
     .index("by_user", ["userId"]),
 
+  // Ave Connector grants (source app -> target resource)
+  connectorGrants: defineTable({
+    userId: v.id("users"),
+    resource: v.string(),
+    scope: v.string(),
+    mode: v.union(v.literal("user_present"), v.literal("background")),
+    sourceAccessToken: v.string(),
+    delegatedAccessToken: v.string(),
+    delegatedExpiresAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_resource", ["userId", "resource"]),
+
   // Languages - now with owner
   languages: defineTable({
     ownerId: v.id("users"),

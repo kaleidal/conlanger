@@ -238,8 +238,19 @@
 			
 			if (editingWord) {
 				await runMutation('lexicon:updateWord', {
-					...payload,
-					wordId: editingWord._id
+					userId: payload.userId,
+					wordId: editingWord._id,
+					lemma: payload.lemma,
+					ipa: payload.ipa,
+					romanization: payload.romanization,
+					wordClass: payload.wordClass,
+					definitions: payload.definitions,
+					etymology: payload.etymology,
+					morphologicalAnalysis: payload.morphologicalAnalysis,
+					notes: payload.notes,
+					tags: payload.tags,
+					semanticFields: payload.semanticFields,
+					usageNotes: payload.usageNotes
 				});
 			} else {
 				await runMutation('lexicon:createWord', payload);

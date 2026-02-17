@@ -4,8 +4,10 @@
 	import { currentLanguage, presence, activityLog } from '$lib/stores';
 	import { sessionId, getUserId, user, isAuthenticated } from '$lib/convex';
 	import { onMount, onDestroy } from 'svelte';
+	import { fly } from 'svelte/transition';
 	import PresenceBar from '$lib/components/PresenceBar.svelte';
 	import ActivityFeed from '$lib/components/ActivityFeed.svelte';
+	import LanguageAssistantSidebar from '$lib/components/LanguageAssistantSidebar.svelte';
 	
 	interface Props {
 		children: Snippet;
@@ -13,6 +15,7 @@
 	
 	let { children }: Props = $props();
 	let showActivity = $state(false);
+	let showAssistant = $state(false);
 	
 	const languageId = $derived($page.params.id);
 	const canEdit = $derived($currentLanguage?.access?.canWrite ?? false);
@@ -91,6 +94,16 @@
 					</svg>
 				</a>
 			{/if}
+			<button
+				class="header-btn"
+				class:active={showAssistant}
+				onclick={() => showAssistant = !showAssistant}
+				title="Language Assistant"
+			>
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M12 3l1.8 3.8L18 8.6l-3 2.9.7 4.2L12 13.8 8.3 15.7l.7-4.2-3-2.9 4.2-1.8L12 3z"></path>
+				</svg>
+			</button>
 			<button 
 				class="header-btn" 
 				class:active={showActivity}
@@ -122,7 +135,7 @@
 		</main>
 		
 		{#if showActivity}
-			<aside class="activity-sidebar">
+			<aside class="activity-sidebar" in:fly={{ x: 24, duration: 180 }} out:fly={{ x: 24, duration: 150 }}>
 				<div class="sidebar-header">
 					<h2>Activity</h2>
 					<button class="close-btn" onclick={() => showActivity = false} aria-label="Close activity panel">
@@ -134,6 +147,16 @@
 				</div>
 				<ActivityFeed activities={$activityLog} />
 			</aside>
+		{/if}
+
+		{#if showAssistant}
+			<div in:fly={{ x: 24, duration: 220 }} out:fly={{ x: 24, duration: 150 }}>
+				<LanguageAssistantSidebar
+					languageId={languageId}
+					languageName={$currentLanguage?.name ?? 'Language'}
+					canWrite={canEdit}
+				/>
+			</div>
 		{/if}
 	</div>
 </div>
