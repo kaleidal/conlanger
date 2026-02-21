@@ -5,7 +5,7 @@
   import { startAveConnectorFlow } from "$lib/auth/connector";
 
   const CONNECTOR_RESOURCE =
-    import.meta.env.VITE_IRIS_CONNECTOR_RESOURCE || "https://irischat.app/delegated";
+    import.meta.env.VITE_IRIS_CONNECTOR_RESOURCE || "iris:inference";
   const LEGACY_CONNECTOR_RESOURCE = "iris:inference";
 
   interface Props {

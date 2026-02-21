@@ -11,7 +11,7 @@ const AVE_CLIENT_SECRET = process.env.AVE_CLIENT_SECRET;
 const IRIS_CONNECTOR_RESOURCE =
   process.env.IRIS_CONNECTOR_RESOURCE ||
   process.env.VITE_IRIS_CONNECTOR_RESOURCE ||
-  "https://irischat.app/delegated";
+  "iris:inference";
 const LEGACY_IRIS_CONNECTOR_RESOURCE = "iris:inference";
 
 type ToolExecution = { tool: string; ok: boolean; result: unknown };
@@ -293,11 +293,31 @@ async function ensureDelegatedGrant(ctx: any, userId: string): Promise<Delegated
   }
 
   if (String(grant.resource) !== IRIS_CONNECTOR_RESOURCE) {
-    const migrated = await exchangeDelegatedToken({
-      subjectToken: String(grant.sourceAccessToken),
-      requestedResource: IRIS_CONNECTOR_RESOURCE,
-      requestedScope: String(grant.scope),
-    });
+    let migrated;
+    try {
+      migrated = await exchangeDelegatedToken({
+        subjectToken: String(grant.sourceAccessToken),
+        requestedResource: IRIS_CONNECTOR_RESOURCE,
+        requestedScope: String(grant.scope),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : "";
+      const isResourceNotFound =
+        message.includes("requested resource not found") || message.includes("resource not found");
+      if (!isResourceNotFound) throw error;
+      migrated = null;
+    }
+
+    if (!migrated) {
+      return {
+        grantId: String(grant._id),
+        sourceAccessToken: String(grant.sourceAccessToken),
+        resource: String(grant.resource),
+        scope: String(grant.scope),
+        mode: grant.mode,
+        delegatedToken: String(grant.delegatedAccessToken),
+      };
+    }
 
     const now = Date.now();
     const delegatedExpiresAt = now + migrated.delegatedExpiresIn * 1000;

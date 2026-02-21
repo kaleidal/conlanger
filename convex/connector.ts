@@ -11,7 +11,7 @@ const IRIS_HTTP_URL =
 const IRIS_CONNECTOR_RESOURCE =
   process.env.IRIS_CONNECTOR_RESOURCE ||
   process.env.VITE_IRIS_CONNECTOR_RESOURCE ||
-  "https://irischat.app/delegated";
+  "iris:inference";
 const LEGACY_IRIS_CONNECTOR_RESOURCE = "iris:inference";
 
 async function findConnectorGrant(ctx: any, userId: string, resource?: string) {
@@ -86,6 +86,12 @@ async function exchangeDelegatedToken(input: {
       | "user_present"
       | "background",
   };
+}
+
+function isResourceNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("requested resource not found") || message.includes("resource not found");
 }
 
 export const getConnectorGrant = query({
@@ -215,11 +221,26 @@ export const completeConnectorGrant = action({
     }
 
     const sourceAccessToken = codeExchangePayload.access_token as string;
-    const delegated = await exchangeDelegatedToken({
-      subjectToken: sourceAccessToken,
-      requestedResource: args.resource,
-      requestedScope: args.scope,
-    });
+    let effectiveResource = args.resource;
+    let delegated;
+    try {
+      delegated = await exchangeDelegatedToken({
+        subjectToken: sourceAccessToken,
+        requestedResource: effectiveResource,
+        requestedScope: args.scope,
+      });
+    } catch (error) {
+      if (!isResourceNotFoundError(error) || effectiveResource === LEGACY_IRIS_CONNECTOR_RESOURCE) {
+        throw error;
+      }
+
+      effectiveResource = LEGACY_IRIS_CONNECTOR_RESOURCE;
+      delegated = await exchangeDelegatedToken({
+        subjectToken: sourceAccessToken,
+        requestedResource: effectiveResource,
+        requestedScope: args.scope,
+      });
+    }
 
     const now = Date.now();
     const delegatedExpiresAt = now + delegated.delegatedExpiresIn * 1000;
@@ -228,7 +249,7 @@ export const completeConnectorGrant = action({
 
     const existing = await ctx.runQuery(api.connector.getConnectorGrant, {
       userId: args.userId,
-      resource: args.resource,
+      resource: effectiveResource,
     });
 
     if (existing) {
@@ -241,12 +262,12 @@ export const completeConnectorGrant = action({
         mode,
         updatedAt: now,
       });
-      return { connected: true, resource: args.resource, mode };
+      return { connected: true, resource: effectiveResource, mode };
     }
 
     await ctx.runMutation(api.connector.createConnectorGrantInternal, {
       userId: args.userId,
-      resource: args.resource,
+      resource: effectiveResource,
       scope: normalizedScope,
       mode,
       sourceAccessToken,
@@ -256,7 +277,7 @@ export const completeConnectorGrant = action({
       updatedAt: now,
     });
 
-    return { connected: true, resource: args.resource, mode };
+    return { connected: true, resource: effectiveResource, mode };
   },
 });
 

@@ -2,7 +2,7 @@ const AVE_CONNECT_URL = import.meta.env.VITE_AVE_CONNECT_URL || "https://aveid.n
 const CLIENT_ID =
   import.meta.env.VITE_AVE_CLIENT_ID || "app_410708d4acd03edd8eeb8a8eb88ecfe7";
 const DEFAULT_CONNECTOR_RESOURCE =
-  import.meta.env.VITE_IRIS_CONNECTOR_RESOURCE || "https://irischat.app/delegated";
+  import.meta.env.VITE_IRIS_CONNECTOR_RESOURCE || "iris:inference";
 
 const CONNECTOR_STATE_KEY = "ave_connector_oauth_state";
 const CONNECTOR_CODE_VERIFIER_KEY = "ave_connector_code_verifier";
