@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { Button } from "$lib/components/ui";
-  import { getUserId, runAction, runMutation, runQuery } from "$lib/convex";
+  import { convex, getUserId, runMutation, runQuery } from "$lib/convex";
   import { startAveConnectorFlow } from "$lib/auth/connector";
+
+  const CONNECTOR_RESOURCE =
+    import.meta.env.VITE_IRIS_CONNECTOR_RESOURCE || "https://irischat.app/delegated";
+  const LEGACY_CONNECTOR_RESOURCE = "iris:inference";
 
   interface Props {
     languageId: string;
@@ -14,6 +18,15 @@
 
   type ToolExecution = { tool: string; ok: boolean; result: unknown };
   type Msg = { role: "user" | "assistant"; content: string; toolExecutions?: ToolExecution[] };
+  type RunEvent = {
+    _id: string;
+    kind: "status" | "assistant_thought" | "tool_start" | "tool_result" | "final" | "error";
+    message?: string;
+    tool?: string;
+    ok?: boolean;
+    payload?: unknown;
+    sequence: number;
+  };
 
   let messages = $state<Msg[]>([
     {
@@ -32,6 +45,17 @@
   let connectorLoading = $state(true);
   let connectorConnected = $state(false);
   let toolSummary = $state<string[]>([]);
+  let importFileName = $state<string | null>(null);
+  let importPreview = $state<string>("");
+  let importError = $state<string | null>(null);
+  let importing = $state(false);
+  let activeRunId = $state<string | null>(null);
+  let activeRunStatus = $state<"queued" | "running" | "completed" | "failed" | null>(null);
+  let activeRun = $state<{ _id: string; status: string; finalReply?: string; error?: string } | null>(null);
+  let liveEvents = $state<RunEvent[]>([]);
+  let finalizedRunIds = new Set<string>();
+  let runUnsubscribe: (() => void) | null = null;
+  let eventsUnsubscribe: (() => void) | null = null;
   let chatBody: HTMLDivElement | null = null;
 
   async function loadConnectorStatus() {
@@ -44,10 +68,16 @@
 
     connectorLoading = true;
     try {
-      const grant = await runQuery<any>("connector:getConnectorGrant", {
-        userId,
-        resource: "iris:inference",
-      });
+      const grant =
+        (await runQuery<any>("connector:getConnectorGrant", {
+          userId,
+          resource: CONNECTOR_RESOURCE,
+        })) ||
+        (await runQuery<any>("connector:getConnectorGrant", {
+          userId,
+          resource: LEGACY_CONNECTOR_RESOURCE,
+        }));
+
       connectorConnected = !!grant;
     } finally {
       connectorLoading = false;
@@ -59,7 +89,7 @@
     const redirectUri = `${window.location.origin}/connector/callback`;
     await startAveConnectorFlow({
       redirectUri,
-      resource: "iris:inference",
+      resource: CONNECTOR_RESOURCE,
       scope: "iris.infer",
       mode: "user_present",
       returnTo,
@@ -71,9 +101,213 @@
     if (!userId) return;
     await runMutation("connector:disconnectConnectorGrant", {
       userId,
-      resource: "iris:inference",
+      resource: CONNECTOR_RESOURCE,
     });
+    await runMutation("connector:disconnectConnectorGrant", {
+        userId,
+      resource: LEGACY_CONNECTOR_RESOURCE,
+      });
     connectorConnected = false;
+  }
+
+  function parseCsv(text: string): Record<string, string>[] {
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length < 2) return [];
+
+    const headers = lines[0].split(",").map((h) => h.trim());
+    const rows: Record<string, string>[] = [];
+    for (let index = 1; index < lines.length; index++) {
+      const values = lines[index].split(",");
+      const row: Record<string, string> = {};
+      headers.forEach((header, position) => {
+        row[header] = (values[position] || "").trim();
+      });
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  async function parseImportFile(file: File): Promise<Record<string, unknown>[]> {
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith(".csv") || lower.endsWith(".txt")) {
+      const text = await file.text();
+      return parseCsv(text);
+    }
+
+    if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
+      const xlsx = await import("xlsx");
+      const bytes = await file.arrayBuffer();
+      const workbook = xlsx.read(bytes, { type: "array" });
+      const firstSheet = workbook.SheetNames[0];
+      if (!firstSheet) return [];
+      const sheet = workbook.Sheets[firstSheet];
+      return xlsx.utils.sheet_to_json(sheet, { defval: "" }) as Record<string, unknown>[];
+    }
+
+    throw new Error("Unsupported file type. Use CSV, XLSX, or XLS.");
+  }
+
+  async function onImportFileChange(event: Event) {
+    importError = null;
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+
+    importFileName = file.name;
+
+    try {
+      const rows = await parseImportFile(file);
+      const limitedRows = rows.slice(0, 400);
+      const preview = JSON.stringify(limitedRows, null, 2);
+      importPreview = preview.length > 120000 ? preview.slice(0, 120000) : preview;
+    } catch (e) {
+      importPreview = "";
+      importError = e instanceof Error ? e.message : "Failed to parse file.";
+    }
+  }
+
+  async function importWithAssistant() {
+    if (!importPreview || activeRunId) return;
+    const userId = getUserId();
+    if (!userId) return;
+
+    importing = true;
+    importError = null;
+    error = null;
+
+    const importPrompt = [
+      `Import this language dataset from file: ${importFileName || "uploaded file"}.`,
+      "Use available tools to create/update data in this language project.",
+      "Infer mapping from columns where possible (e.g., lemma, wordClass, ipa, definitions, notes, phonemes, morphemes, syntax).",
+      "Skip malformed rows safely and report what was imported, skipped, and why.",
+      "Do not invent IDs; only use returned IDs from tool calls.",
+      "Dataset rows (JSON):",
+      importPreview,
+    ].join("\n\n");
+
+    const nextMessages: Msg[] = [...messages, { role: "user", content: importPrompt }];
+    messages = nextMessages;
+
+    try {
+      const started = await runMutation<{ runId: string }>("assistant:startRun", {
+        userId,
+        languageId,
+        model,
+        messages: nextMessages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
+      });
+
+      activeRunId = started.runId;
+      activeRunStatus = "queued";
+      activeRun = null;
+      liveEvents = [];
+      subscribeToRun(started.runId, userId);
+      await scrollToBottom();
+    } catch (e) {
+      importError = e instanceof Error ? e.message : "Failed to start import.";
+    } finally {
+      importing = false;
+    }
+  }
+
+  function stopRunSubscriptions() {
+    if (runUnsubscribe) {
+      runUnsubscribe();
+      runUnsubscribe = null;
+    }
+    if (eventsUnsubscribe) {
+      eventsUnsubscribe();
+      eventsUnsubscribe = null;
+    }
+  }
+
+  function extractToolExecutionsFromEvents(events: RunEvent[]): ToolExecution[] {
+    return events
+      .filter((event) => event.kind === "tool_result")
+      .map((event) => ({
+        tool: event.tool || "unknown",
+        ok: !!event.ok,
+        result: event.payload,
+      }));
+  }
+
+  function maybeFinalizeRun() {
+    if (!activeRun || !activeRunId) return;
+    if (activeRun.status !== "completed" && activeRun.status !== "failed") return;
+    if (finalizedRunIds.has(activeRunId)) return;
+
+    finalizedRunIds.add(activeRunId);
+
+    if (activeRun.status === "completed") {
+      const finalEvent = liveEvents.find((event) => event.kind === "final");
+      const payloadToolExecutions =
+        finalEvent &&
+        finalEvent.payload &&
+        typeof finalEvent.payload === "object" &&
+        Array.isArray((finalEvent.payload as any).toolExecutions)
+          ? ((finalEvent.payload as any).toolExecutions as ToolExecution[])
+          : null;
+      const toolExecutions = payloadToolExecutions || extractToolExecutionsFromEvents(liveEvents);
+
+      messages = [
+        ...messages,
+        {
+          role: "assistant",
+          content: activeRun.finalReply || finalEvent?.message || "Done.",
+          toolExecutions,
+        },
+      ];
+      toolSummary = toolExecutions.map((t) => `${t.ok ? "ok" : "err"}:${t.tool}`);
+    } else {
+      const failureMessage = activeRun.error || "Assistant run failed.";
+      messages = [
+        ...messages,
+        {
+          role: "assistant",
+          content: `Run failed: ${failureMessage}`,
+          toolExecutions: extractToolExecutionsFromEvents(liveEvents),
+        },
+      ];
+      error = failureMessage;
+    }
+
+    activeRunId = null;
+    activeRunStatus = null;
+    activeRun = null;
+    liveEvents = [];
+    stopRunSubscriptions();
+    scrollToBottom();
+  }
+
+  function subscribeToRun(runId: string, userId: string) {
+    stopRunSubscriptions();
+
+    runUnsubscribe = convex.onUpdate(
+      "assistant:getRun" as any,
+      { runId, userId },
+      (run: any) => {
+        activeRun = run;
+        activeRunStatus = run?.status || null;
+        maybeFinalizeRun();
+      },
+    );
+
+    eventsUnsubscribe = convex.onUpdate(
+      "assistant:getRunEvents" as any,
+      { runId, userId, limit: 300 },
+      (events: RunEvent[]) => {
+        liveEvents = events || [];
+        toolSummary = extractToolExecutionsFromEvents(liveEvents).map((t) =>
+          `${t.ok ? "ok" : "err"}:${t.tool}`,
+        );
+        maybeFinalizeRun();
+      },
+    );
   }
 
   async function scrollToBottom() {
@@ -86,7 +320,7 @@
   async function send() {
     const text = prompt.trim();
     const userId = getUserId();
-    if (!text || sending || !userId || !connectorConnected) return;
+    if (!text || sending || !userId || !connectorConnected || !!activeRunId) return;
 
     error = null;
     sending = true;
@@ -95,26 +329,18 @@
     await scrollToBottom();
 
     try {
-      const response = await runAction<{
-        reply: string;
-        model: string;
-        toolExecutions?: ToolExecution[];
-      }>("assistant:chat", {
+      const started = await runMutation<{ runId: string }>("assistant:startRun", {
         userId,
         languageId,
         model,
         messages: messages.map((m) => ({ role: m.role, content: m.content })),
       });
 
-      messages = [
-        ...messages,
-        {
-          role: "assistant",
-          content: response.reply || "(No response)",
-          toolExecutions: response.toolExecutions || [],
-        },
-      ];
-      toolSummary = (response.toolExecutions || []).map((t) => `${t.ok ? "ok" : "err"}:${t.tool}`);
+      activeRunId = started.runId;
+      activeRunStatus = "queued";
+      activeRun = null;
+      liveEvents = [];
+      subscribeToRun(started.runId, userId);
       await scrollToBottom();
     } catch (e) {
       error = e instanceof Error ? e.message : "Assistant request failed.";
@@ -125,6 +351,7 @@
 
   onMount(scrollToBottom);
   onMount(loadConnectorStatus);
+  onDestroy(() => stopRunSubscriptions());
 </script>
 
 <aside class="assistant-panel">
@@ -158,6 +385,65 @@
         <p>Connected to Iris</p>
         <Button size="sm" variant="ghost" onclick={disconnect}>Disconnect</Button>
       </div>
+
+      <div class="import-card">
+        <h3>Import Language Data</h3>
+        <p>
+          Upload CSV/XLSX and let the assistant import it using tools. This uses Iris delegated
+          inference and may consume your Iris usage.
+        </p>
+        <input type="file" accept=".csv,.txt,.xlsx,.xls" onchange={onImportFileChange} />
+        {#if importFileName}
+          <p class="import-file">Selected: {importFileName}</p>
+        {/if}
+        {#if importPreview}
+          <details>
+            <summary>Preview parsed rows</summary>
+            <pre>{importPreview}</pre>
+          </details>
+          <Button
+            size="sm"
+            variant="primary"
+            onclick={importWithAssistant}
+            loading={importing}
+            disabled={!!activeRunId}
+          >
+            Import with AI Assistant
+          </Button>
+        {/if}
+        {#if importError}
+          <p class="import-error">{importError}</p>
+        {/if}
+      </div>
+
+      {#if activeRunId}
+        <div class="run-stream">
+          <div class="run-stream-header">
+            <span>Agent run</span>
+            <span class="status {activeRunStatus || 'queued'}">{activeRunStatus || "queued"}</span>
+          </div>
+
+          {#each liveEvents as event}
+            <div class="run-event">
+              <div class="run-event-line">
+                <span class="kind">{event.kind}</span>
+                {#if event.tool}
+                  <span class="tool">{event.tool}</span>
+                {/if}
+                {#if event.ok !== undefined}
+                  <span class="ok {event.ok ? 'yes' : 'no'}">{event.ok ? "ok" : "err"}</span>
+                {/if}
+              </div>
+              {#if event.message}
+                <p>{event.message}</p>
+              {/if}
+              {#if event.payload !== undefined}
+                <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
 
       {#each messages as msg}
         <div class="msg {msg.role}">
@@ -210,7 +496,7 @@
         }}
       ></textarea>
       <Button variant="primary" onclick={send} loading={sending} disabled={!prompt.trim()}>
-        Send
+        {activeRunId ? "Running..." : "Send"}
       </Button>
     </div>
   {/if}
@@ -280,6 +566,57 @@
     background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-primary));
   }
 
+  .import-card {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: var(--color-bg-primary);
+  }
+
+  .import-card h3 {
+    margin: 0 0 var(--space-1);
+    font-size: var(--size-sm);
+  }
+
+  .import-card p {
+    margin: 0 0 var(--space-2);
+    color: var(--color-text-secondary);
+    font-size: var(--size-xs);
+  }
+
+  .import-file {
+    color: var(--color-text);
+  }
+
+  .import-card input[type="file"] {
+    width: 100%;
+    font-size: var(--size-xs);
+    margin-bottom: var(--space-2);
+  }
+
+  .import-card details {
+    margin-bottom: var(--space-2);
+  }
+
+  .import-card pre {
+    margin: var(--space-2) 0 0;
+    max-height: 180px;
+    overflow: auto;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--color-text-secondary);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2);
+  }
+
+  .import-error {
+    color: var(--color-error) !important;
+    margin-top: var(--space-2);
+  }
+
   .connect-card.centered {
     margin: auto 0;
     text-align: center;
@@ -339,6 +676,98 @@
     white-space: pre-wrap;
     line-height: 1.45;
     font-size: var(--size-sm);
+  }
+
+  .run-stream {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-primary);
+    padding: var(--space-2);
+  }
+
+  .run-stream-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-2);
+    font-size: var(--size-xs);
+    color: var(--color-text-secondary);
+  }
+
+  .status {
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    padding: 2px 8px;
+    text-transform: capitalize;
+  }
+
+  .status.running {
+    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+    color: var(--color-accent);
+  }
+
+  .status.completed {
+    border-color: color-mix(in srgb, var(--color-success) 55%, var(--color-border));
+    color: var(--color-success);
+  }
+
+  .status.failed {
+    border-color: color-mix(in srgb, var(--color-error) 55%, var(--color-border));
+    color: var(--color-error);
+  }
+
+  .run-event {
+    border-top: 1px dashed var(--color-border);
+    padding-top: var(--space-2);
+    margin-top: var(--space-2);
+  }
+
+  .run-event:first-of-type {
+    border-top: none;
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  .run-event-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-1);
+  }
+
+  .run-event .kind,
+  .run-event .tool,
+  .run-event .ok {
+    font-size: 11px;
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    padding: 2px 8px;
+  }
+
+  .run-event .ok.yes {
+    color: var(--color-success);
+  }
+
+  .run-event .ok.no {
+    color: var(--color-error);
+  }
+
+  .run-event p {
+    margin: 0;
+    white-space: pre-wrap;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+  }
+
+  .run-event pre {
+    margin: var(--space-1) 0 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    color: var(--color-text-secondary);
+    max-height: 140px;
+    overflow: auto;
   }
 
   .tool-calls {

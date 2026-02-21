@@ -453,4 +453,48 @@ export default defineSchema({
     .index("by_language", ["languageId"])
     .index("by_user", ["userId"])
     .index("by_language_time", ["languageId", "timestamp"]),
+
+  // Assistant runs for real-time agent execution
+  assistantRuns: defineTable({
+    userId: v.id("users"),
+    languageId: v.id("languages"),
+    model: v.string(),
+    status: v.union(
+      v.literal("queued"),
+      v.literal("running"),
+      v.literal("completed"),
+      v.literal("failed")
+    ),
+    nextSequence: v.number(),
+    finalReply: v.optional(v.string()),
+    error: v.optional(v.string()),
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_language", ["userId", "languageId"]) 
+    .index("by_user_updated", ["userId", "updatedAt"]),
+
+  // Assistant run events streamed to the sidebar in real time
+  assistantRunEvents: defineTable({
+    runId: v.id("assistantRuns"),
+    sequence: v.number(),
+    kind: v.union(
+      v.literal("status"),
+      v.literal("assistant_thought"),
+      v.literal("tool_start"),
+      v.literal("tool_result"),
+      v.literal("final"),
+      v.literal("error")
+    ),
+    message: v.optional(v.string()),
+    tool: v.optional(v.string()),
+    ok: v.optional(v.boolean()),
+    payload: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_run", ["runId"])
+    .index("by_run_sequence", ["runId", "sequence"]),
 });

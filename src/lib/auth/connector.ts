@@ -1,6 +1,8 @@
 const AVE_CONNECT_URL = import.meta.env.VITE_AVE_CONNECT_URL || "https://aveid.net/connect";
 const CLIENT_ID =
   import.meta.env.VITE_AVE_CLIENT_ID || "app_410708d4acd03edd8eeb8a8eb88ecfe7";
+const DEFAULT_CONNECTOR_RESOURCE =
+  import.meta.env.VITE_IRIS_CONNECTOR_RESOURCE || "https://irischat.app/delegated";
 
 const CONNECTOR_STATE_KEY = "ave_connector_oauth_state";
 const CONNECTOR_CODE_VERIFIER_KEY = "ave_connector_code_verifier";
@@ -92,7 +94,7 @@ export function handleConnectorCallback(): {
     return null;
   }
 
-  const resource = sessionStorage.getItem(CONNECTOR_RESOURCE_KEY) || "iris:inference";
+  const resource = sessionStorage.getItem(CONNECTOR_RESOURCE_KEY) || DEFAULT_CONNECTOR_RESOURCE;
   const scope = sessionStorage.getItem(CONNECTOR_SCOPE_KEY) || "iris.infer";
   const mode =
     (sessionStorage.getItem(CONNECTOR_MODE_KEY) as ConnectorMode | null) || "user_present";

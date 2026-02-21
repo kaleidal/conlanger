@@ -1,6 +1,6 @@
 import { v } from "convex/values";
-import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { action, internalAction, internalMutation, mutation, query } from "./_generated/server";
+import { api, internal } from "./_generated/api";
 
 const DEFAULT_ASSISTANT_MODEL = "anthropic/claude-sonnet-4.5";
 const IRIS_HTTP_URL = process.env.IRIS_HTTP_URL || process.env.VITE_IRIS_HTTP_URL || "";
@@ -8,8 +8,14 @@ const AVE_TOKEN_URL = process.env.AVE_TOKEN_URL || "https://api.aveid.net/api/oa
 const AVE_CLIENT_ID =
   process.env.VITE_AVE_CLIENT_ID || "app_410708d4acd03edd8eeb8a8eb88ecfe7";
 const AVE_CLIENT_SECRET = process.env.AVE_CLIENT_SECRET;
+const IRIS_CONNECTOR_RESOURCE =
+  process.env.IRIS_CONNECTOR_RESOURCE ||
+  process.env.VITE_IRIS_CONNECTOR_RESOURCE ||
+  "https://irischat.app/delegated";
+const LEGACY_IRIS_CONNECTOR_RESOURCE = "iris:inference";
 
 type ToolExecution = { tool: string; ok: boolean; result: unknown };
+type RunStatus = "queued" | "running" | "completed" | "failed";
 
 type DelegatedGrantState = {
   grantId: string;
@@ -39,6 +45,44 @@ const WORD_CLASSES = [
   "other",
 ] as const;
 
+const GUIDE_TOPICS: Record<string, { title: string; description: string }> = {
+  phonology: {
+    title: "Phonology",
+    description:
+      "Define phonemes, allophones, phonotactics, and sound changes. Keep contrasts clear with minimal pairs and ensure phonotactic patterns are internally consistent.",
+  },
+  morphology: {
+    title: "Morphology",
+    description:
+      "Use grammatical categories plus morphemes and inflection classes. Keep gloss abbreviations consistent and map each affix to explicit feature values.",
+  },
+  syntax: {
+    title: "Syntax",
+    description:
+      "Model clause structure with explicit syntax rules and examples. Document default word order, then separate transformational rules (questions, focus, topicalization).",
+  },
+  lexicon: {
+    title: "Lexicon",
+    description:
+      "Each entry should include lemma, word class, pronunciation, and definitions. Track derivation and relations so words stay connected to morphology and etymology.",
+  },
+  scripts: {
+    title: "Scripts",
+    description:
+      "Define scripts, glyphs, and romanization rules together. Keep writing direction, glyph ordering, and transliteration priorities explicit.",
+  },
+  texts: {
+    title: "Texts",
+    description:
+      "Use texts to validate grammar and style in context. Prefer examples with interlinear gloss and free translation to surface hidden inconsistencies.",
+  },
+  collaboration: {
+    title: "Collaboration",
+    description:
+      "Use collaborators and activity logs to coordinate edits. Keep high-impact structural changes small and documented to reduce merge conflicts.",
+  },
+};
+
 const TOOL_NAMES = [
   "get_full_snapshot",
   "search_words",
@@ -48,6 +92,9 @@ const TOOL_NAMES = [
   "create_phoneme",
   "update_phoneme",
   "delete_phoneme",
+  "guide_topics",
+  "guide_lookup",
+  "dashboard_call",
 ] as const;
 
 type ToolName = (typeof TOOL_NAMES)[number];
@@ -94,6 +141,13 @@ function definitionsToObjects(defs?: string[]) {
   return defs.map((meaning) => ({ meaning }));
 }
 
+function normalizeToolArgs(raw: unknown, context: { languageId: string; userId: string }) {
+  const args = raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
+  if ("languageId" in args) args.languageId = context.languageId;
+  if ("userId" in args) args.userId = context.userId;
+  return args;
+}
+
 async function ensureLanguageAccess(ctx: any, args: { languageId: string; userId: string }) {
   const context = await ctx.runQuery(api.connector.getLanguageContext, {
     languageId: args.languageId as any,
@@ -106,7 +160,7 @@ async function ensureLanguageAccess(ctx: any, args: { languageId: string; userId
 }
 
 async function loadSnapshot(ctx: any, languageId: string, userId: string) {
-  const [languageContext, words, phonemes, morphemes, syntaxRules] = await Promise.all([
+  const [languageContext, words, phonemes, morphemes, syntaxRules, scripts, texts] = await Promise.all([
     ctx.runQuery(api.connector.getLanguageContext, {
       languageId: languageId as any,
       userId: userId as any,
@@ -115,6 +169,8 @@ async function loadSnapshot(ctx: any, languageId: string, userId: string) {
     ctx.runQuery(api.phonology.getPhonemes, { languageId: languageId as any }),
     ctx.runQuery(api.morphology.getMorphemes, { languageId: languageId as any }),
     ctx.runQuery(api.syntax.getSyntaxRules, { languageId: languageId as any }),
+    ctx.runQuery(api.scripts.getScripts, { languageId: languageId as any }),
+    ctx.runQuery(api.texts.getTexts, { languageId: languageId as any }),
   ]);
 
   return {
@@ -132,6 +188,8 @@ async function loadSnapshot(ctx: any, languageId: string, userId: string) {
       phonemes: phonemes.length,
       morphemes: morphemes.length,
       syntaxRules: syntaxRules.length,
+      scripts: scripts.length,
+      texts: texts.length,
     },
     words: words.slice(0, 240).map((w: any) => ({
       _id: w._id,
@@ -161,20 +219,24 @@ async function loadSnapshot(ctx: any, languageId: string, userId: string) {
 
 function buildSystemPrompt(snapshotSummary: any, canWrite: boolean) {
   return [
-    "You are Conlanger Assistant inside a language workspace.",
+    "You are Conlanger Agent inside a language workspace.",
+    "Work like an autonomous coding assistant: plan briefly, call tools, and continue until done.",
     "All model inference is delegated through Iris.",
     `Current model default: ${DEFAULT_ASSISTANT_MODEL}.`,
     canWrite
-      ? "User has write access. You may propose and execute direct edits when requested."
-      : "User is read-only. Do not perform mutating actions.",
+      ? "User has write access. You may execute direct data edits requested by the user."
+      : "User is read-only. Never perform mutating actions.",
     "You must respond with STRICT JSON only (no markdown):",
     '{"assistant_reply":"string","actions":[{"tool":"tool_name","args":{}}]}',
-    "If no edits are needed, use actions: []",
+    "If no actions are needed, use actions: []",
     `Allowed tools: ${TOOL_NAMES.join(", ")}`,
+    "Tool usage guidelines:",
+    "- Prefer dashboard_call for broad dashboard operations.",
+    "- Use guide_topics/guide_lookup when the user asks for explanations or learning help.",
     "Data constraints:",
     `- wordClass: ${WORD_CLASSES.join(", ")}`,
     "- phoneme type: consonant | vowel",
-    "- Never invent IDs. Use IDs from snapshot/search.",
+    "- Never invent IDs. Use IDs returned by snapshot/search/tools.",
     "Keep assistant_reply concise and practical.",
     `Language summary: ${JSON.stringify(snapshotSummary)}`,
   ].join("\n");
@@ -216,13 +278,72 @@ async function exchangeDelegatedToken(input: {
 }
 
 async function ensureDelegatedGrant(ctx: any, userId: string): Promise<DelegatedGrantState> {
-  const grant = await ctx.runQuery(api.connector.getConnectorGrant, {
-    userId: userId as any,
-    resource: "iris:inference",
-  });
+  let grant =
+    (await ctx.runQuery(api.connector.getConnectorGrant, {
+      userId: userId as any,
+      resource: IRIS_CONNECTOR_RESOURCE,
+    })) ||
+    (await ctx.runQuery(api.connector.getConnectorGrant, {
+      userId: userId as any,
+      resource: LEGACY_IRIS_CONNECTOR_RESOURCE,
+    }));
 
   if (!grant) {
     throw new Error("Iris connector is not connected. Connect Iris first.");
+  }
+
+  if (String(grant.resource) !== IRIS_CONNECTOR_RESOURCE) {
+    const migrated = await exchangeDelegatedToken({
+      subjectToken: String(grant.sourceAccessToken),
+      requestedResource: IRIS_CONNECTOR_RESOURCE,
+      requestedScope: String(grant.scope),
+    });
+
+    const now = Date.now();
+    const delegatedExpiresAt = now + migrated.delegatedExpiresIn * 1000;
+    const preferredGrant = await ctx.runQuery(api.connector.getConnectorGrant, {
+      userId: userId as any,
+      resource: IRIS_CONNECTOR_RESOURCE,
+    });
+
+    if (preferredGrant) {
+      await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
+        grantId: preferredGrant._id,
+        sourceAccessToken: String(grant.sourceAccessToken),
+        delegatedAccessToken: migrated.delegatedAccessToken,
+        delegatedExpiresAt,
+        scope: String(grant.scope),
+        mode: grant.mode,
+        updatedAt: now,
+      });
+      grant = {
+        ...preferredGrant,
+        resource: IRIS_CONNECTOR_RESOURCE,
+        sourceAccessToken: String(grant.sourceAccessToken),
+        delegatedAccessToken: migrated.delegatedAccessToken,
+        delegatedExpiresAt,
+        scope: String(grant.scope),
+      };
+    } else {
+      const createdId = await ctx.runMutation(api.connector.createConnectorGrantInternal, {
+        userId: userId as any,
+        resource: IRIS_CONNECTOR_RESOURCE,
+        scope: String(grant.scope),
+        mode: grant.mode,
+        sourceAccessToken: String(grant.sourceAccessToken),
+        delegatedAccessToken: migrated.delegatedAccessToken,
+        delegatedExpiresAt,
+        createdAt: now,
+        updatedAt: now,
+      });
+      grant = {
+        ...grant,
+        _id: createdId,
+        resource: IRIS_CONNECTOR_RESOURCE,
+        delegatedAccessToken: migrated.delegatedAccessToken,
+        delegatedExpiresAt,
+      };
+    }
   }
 
   let delegatedToken = String(grant.delegatedAccessToken);
@@ -325,6 +446,84 @@ async function askIris(input: {
   }
 
   return String(payload?.content || "");
+}
+
+async function runDashboardCall(
+  ctx: any,
+  input: any,
+  context: { languageId: string; userId: string; canWrite: boolean },
+): Promise<ToolExecution> {
+  const op = String(input?.op || "").trim();
+  const kind = String(input?.kind || "query").trim();
+
+  if (!op.includes(":")) {
+    return {
+      tool: "dashboard_call",
+      ok: false,
+      result: { error: "Invalid op. Use 'module:function' format." },
+    };
+  }
+
+  const [moduleName, functionName] = op.split(":");
+  const isMutation = kind === "mutation";
+  const isQuery = kind === "query";
+
+  if (!isMutation && !isQuery) {
+    return {
+      tool: "dashboard_call",
+      ok: false,
+      result: { error: "Invalid kind. Use 'query' or 'mutation'." },
+    };
+  }
+
+  if (["assistant", "auth"].includes(moduleName)) {
+    return {
+      tool: "dashboard_call",
+      ok: false,
+      result: { error: `Forbidden module: ${moduleName}` },
+    };
+  }
+
+  if (!context.canWrite && isMutation) {
+    return {
+      tool: "dashboard_call",
+      ok: false,
+      result: { error: "Read-only access: mutation denied." },
+    };
+  }
+
+  const fnRef = (api as any)?.[moduleName]?.[functionName];
+  if (!fnRef) {
+    return {
+      tool: "dashboard_call",
+      ok: false,
+      result: { error: `Unknown operation: ${op}` },
+    };
+  }
+
+  try {
+    const args = normalizeToolArgs(input?.args, context);
+    const result = isMutation
+      ? await ctx.runMutation(fnRef, args)
+      : await ctx.runQuery(fnRef, args);
+
+    return {
+      tool: "dashboard_call",
+      ok: true,
+      result: {
+        op,
+        kind,
+        result,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Dashboard call failed.";
+    return {
+      tool: "dashboard_call",
+      ok: false,
+      result: { error: message, op, kind },
+    };
+  }
 }
 
 async function runTool(
@@ -431,6 +630,34 @@ async function runTool(
         });
         return { tool: toolName, ok: true, result: { deleted: true, phonemeId: input.phonemeId } };
       }
+      case "guide_topics": {
+        return {
+          tool: toolName,
+          ok: true,
+          result: Object.keys(GUIDE_TOPICS).map((key) => ({ key, title: GUIDE_TOPICS[key].title })),
+        };
+      }
+      case "guide_lookup": {
+        const queryText = String(input?.query || "").toLowerCase().trim();
+        const topic = String(input?.topic || "").toLowerCase().trim();
+        const entries = Object.entries(GUIDE_TOPICS)
+          .filter(([key, value]) => {
+            if (topic) return key === topic;
+            if (!queryText) return true;
+            return (
+              key.includes(queryText) ||
+              value.title.toLowerCase().includes(queryText) ||
+              value.description.toLowerCase().includes(queryText)
+            );
+          })
+          .map(([key, value]) => ({ key, ...value }))
+          .slice(0, 6);
+
+        return { tool: toolName, ok: true, result: entries };
+      }
+      case "dashboard_call": {
+        return await runDashboardCall(ctx, input, context);
+      }
     }
 
     return { tool: toolName, ok: false, result: { error: `Unhandled tool: ${toolName}` } };
@@ -440,6 +667,374 @@ async function runTool(
   }
 }
 
+async function runAgentLoop(
+  ctx: any,
+  args: {
+    userId: string;
+    languageId: string;
+    model?: string;
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+  },
+  hooks?: {
+    onThought?: (message: string) => Promise<void>;
+    onToolStart?: (tool: string, input: unknown) => Promise<void>;
+    onToolResult?: (result: ToolExecution) => Promise<void>;
+  },
+) {
+  if (!IRIS_HTTP_URL) {
+    throw new Error("IRIS_HTTP_URL is not configured.");
+  }
+
+  const selectedModel = (args.model || DEFAULT_ASSISTANT_MODEL).trim();
+
+  const { language, canWrite } = await ensureLanguageAccess(ctx, {
+    languageId: args.languageId,
+    userId: args.userId,
+  });
+
+  let grant = await ensureDelegatedGrant(ctx, args.userId);
+  const snapshot = await loadSnapshot(ctx, args.languageId, args.userId);
+  const systemPrompt = buildSystemPrompt(
+    {
+      id: language._id,
+      name: language.name,
+      nativeName: language.nativeName,
+      counts: snapshot.counts,
+    },
+    canWrite,
+  );
+
+  const dialogue: Array<{ role: "user" | "assistant"; content: string }> = [...args.messages.slice(-12)];
+  const toolExecutions: ToolExecution[] = [];
+
+  for (let step = 0; step < 7; step++) {
+    const planningInstruction =
+      step === 0
+        ? "Process the user request now. Return STRICT JSON. Use tools if needed."
+        : "Given tool results, continue autonomously. Return STRICT JSON. If complete, set actions to [].";
+
+    let content: string;
+    try {
+      content = await askIris({
+        delegatedToken: grant.delegatedToken,
+        model: selectedModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...dialogue.map((m) => ({ role: m.role, content: m.content })),
+          { role: "user", content: planningInstruction },
+        ],
+      });
+    } catch (error) {
+      const irisError = error as Error & { status?: number; details?: string };
+      const detail = (irisError.details || irisError.message || "").toLowerCase();
+      const isInvalidToken = irisError.status === 401 || detail.includes("invalid_token");
+
+      if (!isInvalidToken) throw error;
+
+      try {
+        grant = await refreshDelegatedGrant(ctx, grant);
+      } catch {
+        throw new Error(
+          "Iris connector authorization is expired or invalid. Please reconnect to Iris and try again.",
+        );
+      }
+
+      content = await askIris({
+        delegatedToken: grant.delegatedToken,
+        model: selectedModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...dialogue.map((m) => ({ role: m.role, content: m.content })),
+          { role: "user", content: planningInstruction },
+        ],
+      });
+    }
+
+    const planned = tryParseJsonObject(content);
+    if (!planned || typeof planned !== "object") {
+      return { reply: content, model: selectedModel, toolExecutions };
+    }
+
+    const assistantReply =
+      typeof planned.assistant_reply === "string" ? planned.assistant_reply.trim() : "";
+    const actions = Array.isArray(planned.actions) ? planned.actions : [];
+
+    if (assistantReply && hooks?.onThought) {
+      await hooks.onThought(assistantReply);
+    }
+
+    if (actions.length === 0) {
+      return { reply: assistantReply || "Done.", model: selectedModel, toolExecutions };
+    }
+
+    const stepResults: ToolExecution[] = [];
+    for (const actionItem of actions) {
+      const tool = String(actionItem?.tool || "");
+      const input = actionItem?.args && typeof actionItem.args === "object" ? actionItem.args : {};
+
+      if (hooks?.onToolStart) {
+        await hooks.onToolStart(tool, input);
+      }
+
+      const result = await runTool(ctx, tool, input, {
+        languageId: args.languageId,
+        userId: args.userId,
+        canWrite,
+      });
+
+      toolExecutions.push(result);
+      stepResults.push(result);
+
+      if (hooks?.onToolResult) {
+        await hooks.onToolResult(result);
+      }
+    }
+
+    dialogue.push({
+      role: "assistant",
+      content: assistantReply || "Applying requested actions.",
+    });
+    dialogue.push({
+      role: "user",
+      content: `Tool results:\n${JSON.stringify(stepResults)}\nContinue and return STRICT JSON.`,
+    });
+  }
+
+  return {
+    reply:
+      "I reached the planning step limit after applying some actions. Ask me to continue if you want more changes.",
+    model: selectedModel,
+    toolExecutions,
+  };
+}
+
+export const appendRunEventInternal = internalMutation({
+  args: {
+    runId: v.id("assistantRuns"),
+    kind: v.union(
+      v.literal("status"),
+      v.literal("assistant_thought"),
+      v.literal("tool_start"),
+      v.literal("tool_result"),
+      v.literal("final"),
+      v.literal("error"),
+    ),
+    message: v.optional(v.string()),
+    tool: v.optional(v.string()),
+    ok: v.optional(v.boolean()),
+    payload: v.optional(v.any()),
+  },
+  handler: async (ctx, args) => {
+    const run = await ctx.db.get(args.runId);
+    if (!run) throw new Error("Run not found.");
+
+    const now = Date.now();
+    const sequence = (run.nextSequence || 0) + 1;
+
+    await ctx.db.patch(args.runId, {
+      nextSequence: sequence,
+      updatedAt: now,
+    });
+
+    await ctx.db.insert("assistantRunEvents", {
+      runId: args.runId,
+      sequence,
+      kind: args.kind,
+      message: args.message,
+      tool: args.tool,
+      ok: args.ok,
+      payload: args.payload,
+      createdAt: now,
+    });
+  },
+});
+
+export const updateRunStatusInternal = internalMutation({
+  args: {
+    runId: v.id("assistantRuns"),
+    status: v.union(v.literal("queued"), v.literal("running"), v.literal("completed"), v.literal("failed")),
+    finalReply: v.optional(v.string()),
+    error: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const run = await ctx.db.get(args.runId);
+    if (!run) throw new Error("Run not found.");
+
+    const now = Date.now();
+    const patch: Record<string, unknown> = {
+      status: args.status,
+      updatedAt: now,
+    };
+
+    if (args.status === "running") patch.startedAt = now;
+    if (args.status === "completed" || args.status === "failed") patch.completedAt = now;
+    if (args.finalReply !== undefined) patch.finalReply = args.finalReply;
+    if (args.error !== undefined) patch.error = args.error;
+
+    await ctx.db.patch(args.runId, patch as any);
+  },
+});
+
+export const getRun = query({
+  args: {
+    runId: v.id("assistantRuns"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const run = await ctx.db.get(args.runId);
+    if (!run || run.userId !== args.userId) return null;
+    return run;
+  },
+});
+
+export const getRunEvents = query({
+  args: {
+    runId: v.id("assistantRuns"),
+    userId: v.id("users"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const run = await ctx.db.get(args.runId);
+    if (!run || run.userId !== args.userId) return [];
+
+    const all = await ctx.db
+      .query("assistantRunEvents")
+      .withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
+      .collect();
+
+    const limit = Math.max(20, Math.min(500, Number(args.limit || 200)));
+    return all.slice(-limit);
+  },
+});
+
+export const processRunInternal = internalAction({
+  args: {
+    runId: v.id("assistantRuns"),
+    userId: v.id("users"),
+    languageId: v.id("languages"),
+    model: v.optional(v.string()),
+    messages: v.array(v.object({ role: v.union(v.literal("user"), v.literal("assistant")), content: v.string() })),
+  },
+  handler: async (ctx, args) => {
+    await ctx.runMutation(internal.assistant.updateRunStatusInternal, {
+      runId: args.runId,
+      status: "running",
+    });
+
+    await ctx.runMutation(internal.assistant.appendRunEventInternal, {
+      runId: args.runId,
+      kind: "status",
+      message: "Agent run started.",
+    });
+
+    try {
+      const result = await runAgentLoop(
+        ctx,
+        {
+          userId: args.userId as any,
+          languageId: args.languageId as any,
+          model: args.model,
+          messages: args.messages,
+        },
+        {
+          onThought: async (message) => {
+            await ctx.runMutation(internal.assistant.appendRunEventInternal, {
+              runId: args.runId,
+              kind: "assistant_thought",
+              message,
+            });
+          },
+          onToolStart: async (tool, input) => {
+            await ctx.runMutation(internal.assistant.appendRunEventInternal, {
+              runId: args.runId,
+              kind: "tool_start",
+              tool,
+              payload: input,
+            });
+          },
+          onToolResult: async (toolResult) => {
+            await ctx.runMutation(internal.assistant.appendRunEventInternal, {
+              runId: args.runId,
+              kind: "tool_result",
+              tool: toolResult.tool,
+              ok: toolResult.ok,
+              payload: toolResult.result,
+            });
+          },
+        },
+      );
+
+      await ctx.runMutation(internal.assistant.updateRunStatusInternal, {
+        runId: args.runId,
+        status: "completed",
+        finalReply: result.reply,
+      });
+
+      await ctx.runMutation(internal.assistant.appendRunEventInternal, {
+        runId: args.runId,
+        kind: "final",
+        message: result.reply,
+        payload: {
+          model: result.model,
+          toolExecutions: result.toolExecutions,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Assistant run failed.";
+
+      await ctx.runMutation(internal.assistant.updateRunStatusInternal, {
+        runId: args.runId,
+        status: "failed",
+        error: message,
+      });
+
+      await ctx.runMutation(internal.assistant.appendRunEventInternal, {
+        runId: args.runId,
+        kind: "error",
+        message,
+      });
+    }
+  },
+});
+
+export const startRun = mutation({
+  args: {
+    userId: v.id("users"),
+    languageId: v.id("languages"),
+    model: v.optional(v.string()),
+    messages: v.array(v.object({ role: v.union(v.literal("user"), v.literal("assistant")), content: v.string() })),
+  },
+  handler: async (ctx, args) => {
+    const selectedModel = (args.model || DEFAULT_ASSISTANT_MODEL).trim();
+
+    await ctx.runQuery(api.connector.getLanguageContext, {
+      userId: args.userId,
+      languageId: args.languageId,
+    });
+
+    const now = Date.now();
+    const runId = await ctx.db.insert("assistantRuns", {
+      userId: args.userId,
+      languageId: args.languageId,
+      model: selectedModel,
+      status: "queued",
+      nextSequence: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await ctx.scheduler.runAfter(0, internal.assistant.processRunInternal, {
+      runId,
+      userId: args.userId,
+      languageId: args.languageId,
+      model: selectedModel,
+      messages: args.messages,
+    });
+
+    return { runId };
+  },
+});
+
 export const chat = action({
   args: {
     userId: v.id("users"),
@@ -448,119 +1043,11 @@ export const chat = action({
     messages: v.array(v.object({ role: v.union(v.literal("user"), v.literal("assistant")), content: v.string() })),
   },
   handler: async (ctx, args) => {
-    if (!IRIS_HTTP_URL) {
-      throw new Error("IRIS_HTTP_URL is not configured.");
-    }
-
-    const selectedModel = (args.model || DEFAULT_ASSISTANT_MODEL).trim();
-
-    const { language, canWrite } = await ensureLanguageAccess(ctx, {
-      languageId: args.languageId as any,
+    return await runAgentLoop(ctx, {
       userId: args.userId as any,
+      languageId: args.languageId as any,
+      model: args.model,
+      messages: args.messages,
     });
-
-    let grant = await ensureDelegatedGrant(ctx, args.userId as any);
-    const snapshot = await loadSnapshot(ctx, args.languageId as any, args.userId as any);
-    const systemPrompt = buildSystemPrompt(
-      {
-        id: language._id,
-        name: language.name,
-        nativeName: language.nativeName,
-        counts: snapshot.counts,
-      },
-      canWrite,
-    );
-
-    const dialogue: Array<{ role: "user" | "assistant"; content: string }> = [
-      ...args.messages.slice(-12),
-    ];
-
-    const toolExecutions: ToolExecution[] = [];
-
-    for (let step = 0; step < 5; step++) {
-      const planningInstruction =
-        step === 0
-          ? "Process the user request now. Return STRICT JSON."
-          : "Given the tool results, continue. Return STRICT JSON. If done, set actions to [].";
-
-      let content: string;
-      try {
-        content = await askIris({
-          delegatedToken: grant.delegatedToken,
-          model: selectedModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...dialogue.map((m) => ({ role: m.role, content: m.content })),
-            { role: "user", content: planningInstruction },
-          ],
-        });
-      } catch (error) {
-        const irisError = error as Error & { status?: number; details?: string };
-        const detail = (irisError.details || irisError.message || "").toLowerCase();
-        const isInvalidToken = irisError.status === 401 || detail.includes("invalid_token");
-
-        if (!isInvalidToken) throw error;
-
-        try {
-          grant = await refreshDelegatedGrant(ctx, grant);
-        } catch {
-          throw new Error(
-            "Iris connector authorization is expired or invalid. Please reconnect to Iris and try again.",
-          );
-        }
-
-        content = await askIris({
-          delegatedToken: grant.delegatedToken,
-          model: selectedModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...dialogue.map((m) => ({ role: m.role, content: m.content })),
-            { role: "user", content: planningInstruction },
-          ],
-        });
-      }
-
-      const planned = tryParseJsonObject(content);
-      if (!planned || typeof planned !== "object") {
-        return { reply: content, model: selectedModel, toolExecutions };
-      }
-
-      const assistantReply =
-        typeof planned.assistant_reply === "string" ? planned.assistant_reply : "";
-      const actions = Array.isArray(planned.actions) ? planned.actions : [];
-
-      if (actions.length === 0) {
-        return { reply: assistantReply || "Done.", model: selectedModel, toolExecutions };
-      }
-
-      const stepResults: ToolExecution[] = [];
-      for (const actionItem of actions) {
-        const tool = String(actionItem?.tool || "");
-        const input = actionItem?.args && typeof actionItem.args === "object" ? actionItem.args : {};
-        const result = await runTool(ctx, tool, input, {
-          languageId: args.languageId as any,
-          userId: args.userId as any,
-          canWrite,
-        });
-        toolExecutions.push(result);
-        stepResults.push(result);
-      }
-
-      dialogue.push({
-        role: "assistant",
-        content: assistantReply || "Applying requested changes.",
-      });
-      dialogue.push({
-        role: "user",
-        content: `Tool results:\n${JSON.stringify(stepResults)}\nNow continue and return STRICT JSON.`,
-      });
-    }
-
-    return {
-      reply:
-        "I reached the planning step limit after applying some actions. Ask me to continue if you want more changes.",
-      model: selectedModel,
-      toolExecutions,
-    };
   },
 });

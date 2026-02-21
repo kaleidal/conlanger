@@ -5,6 +5,7 @@ interface ImportMetaEnv {
 	readonly VITE_AVE_CLIENT_ID: string;
 	readonly VITE_AVE_CONNECT_URL?: string;
 	readonly VITE_IRIS_HTTP_URL?: string;
+	readonly VITE_IRIS_CONNECTOR_RESOURCE?: string;
 }
 
 interface ImportMeta {

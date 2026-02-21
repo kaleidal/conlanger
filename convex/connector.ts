@@ -8,6 +8,27 @@ const AVE_CLIENT_ID =
 const AVE_CLIENT_SECRET = process.env.AVE_CLIENT_SECRET;
 const IRIS_HTTP_URL =
   process.env.IRIS_HTTP_URL || process.env.VITE_IRIS_HTTP_URL || "";
+const IRIS_CONNECTOR_RESOURCE =
+  process.env.IRIS_CONNECTOR_RESOURCE ||
+  process.env.VITE_IRIS_CONNECTOR_RESOURCE ||
+  "https://irischat.app/delegated";
+const LEGACY_IRIS_CONNECTOR_RESOURCE = "iris:inference";
+
+async function findConnectorGrant(ctx: any, userId: string, resource?: string) {
+  const targets = resource
+    ? [resource]
+    : [IRIS_CONNECTOR_RESOURCE, LEGACY_IRIS_CONNECTOR_RESOURCE];
+
+  for (const target of targets) {
+    const existing = await ctx.db
+      .query("connectorGrants")
+      .withIndex("by_user_resource", (q: any) => q.eq("userId", userId).eq("resource", target))
+      .first();
+    if (existing) return existing;
+  }
+
+  return null;
+}
 
 function parseScopes(scope: string): string[] {
   return scope
@@ -73,13 +94,7 @@ export const getConnectorGrant = query({
     resource: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const resource = args.resource || "iris:inference";
-    return await ctx.db
-      .query("connectorGrants")
-      .withIndex("by_user_resource", (q) =>
-        q.eq("userId", args.userId).eq("resource", resource),
-      )
-      .first();
+    return await findConnectorGrant(ctx, args.userId, args.resource);
   },
 });
 
@@ -135,16 +150,21 @@ export const disconnectConnectorGrant = mutation({
     resource: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const resource = args.resource || "iris:inference";
-    const existing = await ctx.db
-      .query("connectorGrants")
-      .withIndex("by_user_resource", (q) =>
-        q.eq("userId", args.userId).eq("resource", resource),
-      )
-      .first();
+    const targets = args.resource
+      ? [args.resource]
+      : [IRIS_CONNECTOR_RESOURCE, LEGACY_IRIS_CONNECTOR_RESOURCE];
 
-    if (existing) {
-      await ctx.db.delete(existing._id);
+    for (const target of targets) {
+      const existing = await ctx.db
+        .query("connectorGrants")
+        .withIndex("by_user_resource", (q) =>
+          q.eq("userId", args.userId).eq("resource", target),
+        )
+        .first();
+
+      if (existing) {
+        await ctx.db.delete(existing._id);
+      }
     }
 
     return { disconnected: true };
@@ -294,7 +314,7 @@ export const inferWithIris = action({
 
     const grant = await ctx.runQuery(api.connector.getConnectorGrant, {
       userId: args.userId,
-      resource: "iris:inference",
+      resource: IRIS_CONNECTOR_RESOURCE,
     });
 
     if (!grant) {
