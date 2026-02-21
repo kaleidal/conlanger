@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
+  import { marked } from "marked";
   import { Button } from "$lib/components/ui";
   import { convex, getUserId, runMutation, runQuery } from "$lib/convex";
   import { startAveConnectorFlow } from "$lib/auth/connector";
@@ -16,8 +17,7 @@
 
   let { languageId, languageName = "Language", canWrite }: Props = $props();
 
-  type ToolExecution = { tool: string; ok: boolean; result: unknown };
-  type Msg = { role: "user" | "assistant"; content: string; toolExecutions?: ToolExecution[] };
+  type Msg = { role: "user" | "assistant"; content: string };
   type RunEvent = {
     _id: string;
     kind: "status" | "assistant_thought" | "tool_start" | "tool_result" | "final" | "error";
@@ -44,7 +44,6 @@
   let error = $state<string | null>(null);
   let connectorLoading = $state(true);
   let connectorConnected = $state(false);
-  let toolSummary = $state<string[]>([]);
   let importFileName = $state<string | null>(null);
   let importPreview = $state<string>("");
   let importError = $state<string | null>(null);
@@ -57,6 +56,11 @@
   let runUnsubscribe: (() => void) | null = null;
   let eventsUnsubscribe: (() => void) | null = null;
   let chatBody: HTMLDivElement | null = null;
+  const hasSentUserMessage = $derived(messages.some((message) => message.role === "user"));
+
+  function renderAssistantMarkdown(content: string): string {
+    return marked.parse(content, { gfm: true, breaks: true }) as string;
+  }
 
   async function loadConnectorStatus() {
     const userId = getUserId();
@@ -226,16 +230,6 @@
     }
   }
 
-  function extractToolExecutionsFromEvents(events: RunEvent[]): ToolExecution[] {
-    return events
-      .filter((event) => event.kind === "tool_result")
-      .map((event) => ({
-        tool: event.tool || "unknown",
-        ok: !!event.ok,
-        result: event.payload,
-      }));
-  }
-
   function maybeFinalizeRun() {
     if (!activeRun || !activeRunId) return;
     if (activeRun.status !== "completed" && activeRun.status !== "failed") return;
@@ -245,24 +239,14 @@
 
     if (activeRun.status === "completed") {
       const finalEvent = liveEvents.find((event) => event.kind === "final");
-      const payloadToolExecutions =
-        finalEvent &&
-        finalEvent.payload &&
-        typeof finalEvent.payload === "object" &&
-        Array.isArray((finalEvent.payload as any).toolExecutions)
-          ? ((finalEvent.payload as any).toolExecutions as ToolExecution[])
-          : null;
-      const toolExecutions = payloadToolExecutions || extractToolExecutionsFromEvents(liveEvents);
 
       messages = [
         ...messages,
         {
           role: "assistant",
           content: activeRun.finalReply || finalEvent?.message || "Done.",
-          toolExecutions,
         },
       ];
-      toolSummary = toolExecutions.map((t) => `${t.ok ? "ok" : "err"}:${t.tool}`);
     } else {
       const failureMessage = activeRun.error || "Assistant run failed.";
       messages = [
@@ -270,7 +254,6 @@
         {
           role: "assistant",
           content: `Run failed: ${failureMessage}`,
-          toolExecutions: extractToolExecutionsFromEvents(liveEvents),
         },
       ];
       error = failureMessage;
@@ -302,9 +285,6 @@
       { runId, userId, limit: 300 },
       (events: RunEvent[]) => {
         liveEvents = events || [];
-        toolSummary = extractToolExecutionsFromEvents(liveEvents).map((t) =>
-          `${t.ok ? "ok" : "err"}:${t.tool}`,
-        );
         maybeFinalizeRun();
       },
     );
@@ -323,6 +303,7 @@
     if (!text || sending || !userId || !connectorConnected || !!activeRunId) return;
 
     error = null;
+    importError = null;
     sending = true;
     messages = [...messages, { role: "user", content: text }];
     prompt = "";
@@ -381,40 +362,42 @@
         </div>
       </div>
     {:else}
-      <div class="connect-card connected">
-        <p>Connected to Iris</p>
-        <Button size="sm" variant="ghost" onclick={disconnect}>Disconnect</Button>
-      </div>
+      {#if !hasSentUserMessage}
+        <div class="connect-card connected">
+          <p>Connected to Iris</p>
+          <Button size="sm" variant="ghost" onclick={disconnect}>Disconnect</Button>
+        </div>
 
-      <div class="import-card">
-        <h3>Import Language Data</h3>
-        <p>
-          Upload CSV/XLSX and let the assistant import it using tools. This uses Iris delegated
-          inference and may consume your Iris usage.
-        </p>
-        <input type="file" accept=".csv,.txt,.xlsx,.xls" onchange={onImportFileChange} />
-        {#if importFileName}
-          <p class="import-file">Selected: {importFileName}</p>
-        {/if}
-        {#if importPreview}
-          <details>
-            <summary>Preview parsed rows</summary>
-            <pre>{importPreview}</pre>
-          </details>
-          <Button
-            size="sm"
-            variant="primary"
-            onclick={importWithAssistant}
-            loading={importing}
-            disabled={!!activeRunId}
-          >
-            Import with AI Assistant
-          </Button>
-        {/if}
-        {#if importError}
-          <p class="import-error">{importError}</p>
-        {/if}
-      </div>
+        <div class="import-card">
+          <h3>Import Language Data</h3>
+          <p>
+            Upload CSV/XLSX and let the assistant import it using tools. This uses Iris delegated
+            inference and may consume your Iris usage.
+          </p>
+          <input type="file" accept=".csv,.txt,.xlsx,.xls" onchange={onImportFileChange} />
+          {#if importFileName}
+            <p class="import-file">Selected: {importFileName}</p>
+          {/if}
+          {#if importPreview}
+            <details>
+              <summary>Preview parsed rows</summary>
+              <pre>{importPreview}</pre>
+            </details>
+            <Button
+              size="sm"
+              variant="primary"
+              onclick={importWithAssistant}
+              loading={importing}
+              disabled={!!activeRunId}
+            >
+              Import with AI Assistant
+            </Button>
+          {/if}
+          {#if importError}
+            <p class="import-error">{importError}</p>
+          {/if}
+        </div>
+      {/if}
 
       {#if activeRunId}
         <div class="run-stream">
@@ -448,31 +431,15 @@
       {#each messages as msg}
         <div class="msg {msg.role}">
           <span class="msg-role">{msg.role === "user" ? "You" : "Assistant"}</span>
-          <p>{msg.content}</p>
-          {#if msg.role === "assistant" && msg.toolExecutions && msg.toolExecutions.length > 0}
-            <div class="tool-calls">
-              {#each msg.toolExecutions as exec}
-                <div class="tool-call">
-                  <span class="tool-call-name {exec.ok ? 'ok' : 'err'}">
-                    {exec.ok ? "ok" : "err"}:{exec.tool}
-                  </span>
-                  <pre>{JSON.stringify(exec.result, null, 2)}</pre>
-                </div>
-              {/each}
-            </div>
+          {#if msg.role === "assistant"}
+            <div class="msg-markdown">{@html renderAssistantMarkdown(msg.content)}</div>
+          {:else}
+            <p>{msg.content}</p>
           {/if}
         </div>
       {/each}
     {/if}
   </div>
-
-  {#if connectorConnected && toolSummary.length > 0}
-    <div class="tool-strip">
-      {#each toolSummary.slice(-6) as item}
-        <span>{item}</span>
-      {/each}
-    </div>
-  {/if}
 
   {#if connectorConnected && error}
     <p class="error">{error}</p>
@@ -678,6 +645,51 @@
     font-size: var(--size-sm);
   }
 
+  .msg-markdown :global(p) {
+    margin: 0 0 var(--space-2);
+    line-height: 1.5;
+    font-size: var(--size-sm);
+  }
+
+  .msg-markdown :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .msg-markdown :global(ul),
+  .msg-markdown :global(ol) {
+    margin: 0 0 var(--space-2) var(--space-4);
+  }
+
+  .msg-markdown :global(li) {
+    margin-bottom: 2px;
+    line-height: 1.45;
+    font-size: var(--size-sm);
+  }
+
+  .msg-markdown :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+
+  .msg-markdown :global(pre) {
+    margin: 0 0 var(--space-2);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2);
+    overflow: auto;
+  }
+
+  .msg-markdown :global(pre code) {
+    border: none;
+    background: transparent;
+    padding: 0;
+  }
+
   .run-stream {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
@@ -768,66 +780,6 @@
     color: var(--color-text-secondary);
     max-height: 140px;
     overflow: auto;
-  }
-
-  .tool-calls {
-    margin-top: var(--space-2);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-  }
-
-  .tool-call {
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    background: var(--color-bg-secondary);
-    padding: var(--space-2);
-  }
-
-  .tool-call-name {
-    display: inline-flex;
-    align-items: center;
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--color-border);
-    margin-bottom: var(--space-2);
-  }
-
-  .tool-call-name.ok {
-    color: var(--color-success);
-    border-color: color-mix(in srgb, var(--color-success) 40%, var(--color-border));
-  }
-
-  .tool-call-name.err {
-    color: var(--color-error);
-    border-color: color-mix(in srgb, var(--color-error) 40%, var(--color-border));
-  }
-
-  .tool-call pre {
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--color-text-secondary);
-    max-height: 180px;
-    overflow: auto;
-  }
-
-  .tool-strip {
-    padding: 0 var(--space-4) var(--space-2);
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1);
-  }
-
-  .tool-strip span {
-    font-size: 11px;
-    border-radius: 999px;
-    border: 1px solid var(--color-border);
-    color: var(--color-text-tertiary);
-    padding: 2px 8px;
   }
 
   .assistant-input {
