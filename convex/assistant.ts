@@ -11,6 +11,15 @@ const AVE_CLIENT_SECRET = process.env.AVE_CLIENT_SECRET;
 
 type ToolExecution = { tool: string; ok: boolean; result: unknown };
 
+type DelegatedGrantState = {
+  grantId: string;
+  sourceAccessToken: string;
+  resource: string;
+  scope: string;
+  mode: "user_present" | "background";
+  delegatedToken: string;
+};
+
 const WORD_CLASSES = [
   "noun",
   "verb",
@@ -206,7 +215,7 @@ async function exchangeDelegatedToken(input: {
   };
 }
 
-async function ensureDelegatedGrant(ctx: any, userId: string) {
+async function ensureDelegatedGrant(ctx: any, userId: string): Promise<DelegatedGrantState> {
   const grant = await ctx.runQuery(api.connector.getConnectorGrant, {
     userId: userId as any,
     resource: "iris:inference",
@@ -216,7 +225,7 @@ async function ensureDelegatedGrant(ctx: any, userId: string) {
     throw new Error("Iris connector is not connected. Connect Iris first.");
   }
 
-  let delegatedToken = grant.delegatedAccessToken;
+  let delegatedToken = String(grant.delegatedAccessToken);
   let delegatedExpiresAt = grant.delegatedExpiresAt;
   const now = Date.now();
 
@@ -230,16 +239,51 @@ async function ensureDelegatedGrant(ctx: any, userId: string) {
     delegatedExpiresAt = now + refreshed.delegatedExpiresIn * 1000;
     await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
       grantId: grant._id,
-      sourceAccessToken: grant.sourceAccessToken,
+      sourceAccessToken: String(grant.sourceAccessToken),
       delegatedAccessToken: delegatedToken,
       delegatedExpiresAt,
-      scope: grant.scope,
+      scope: String(grant.scope),
       mode: grant.mode,
       updatedAt: now,
     });
   }
 
-  return delegatedToken;
+  return {
+    grantId: String(grant._id),
+    sourceAccessToken: String(grant.sourceAccessToken),
+    resource: String(grant.resource),
+    scope: String(grant.scope),
+    mode: grant.mode,
+    delegatedToken,
+  };
+}
+
+async function refreshDelegatedGrant(
+  ctx: any,
+  grant: DelegatedGrantState,
+): Promise<DelegatedGrantState> {
+  const refreshed = await exchangeDelegatedToken({
+    subjectToken: grant.sourceAccessToken,
+    requestedResource: grant.resource,
+    requestedScope: grant.scope,
+  });
+  const now = Date.now();
+  const delegatedExpiresAt = now + refreshed.delegatedExpiresIn * 1000;
+
+  await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
+    grantId: grant.grantId as any,
+    sourceAccessToken: grant.sourceAccessToken,
+    delegatedAccessToken: refreshed.delegatedAccessToken,
+    delegatedExpiresAt,
+    scope: grant.scope,
+    mode: grant.mode,
+    updatedAt: now,
+  });
+
+  return {
+    ...grant,
+    delegatedToken: refreshed.delegatedAccessToken,
+  };
 }
 
 async function askIris(input: {
@@ -271,7 +315,13 @@ async function askIris(input: {
   if (!response.ok) {
     const details =
       payload?.error_description || payload?.details || payload?.error || "Unknown error";
-    throw new Error(`Iris delegated inference failed (${response.status}): ${details}`);
+    const err = new Error(`Iris delegated inference failed (${response.status}): ${details}`) as Error & {
+      status?: number;
+      details?: string;
+    };
+    err.status = response.status;
+    err.details = String(details);
+    throw err;
   }
 
   return String(payload?.content || "");
@@ -409,7 +459,7 @@ export const chat = action({
       userId: args.userId as any,
     });
 
-    const delegatedToken = await ensureDelegatedGrant(ctx, args.userId as any);
+    let grant = await ensureDelegatedGrant(ctx, args.userId as any);
     const snapshot = await loadSnapshot(ctx, args.languageId as any, args.userId as any);
     const systemPrompt = buildSystemPrompt(
       {
@@ -433,15 +483,42 @@ export const chat = action({
           ? "Process the user request now. Return STRICT JSON."
           : "Given the tool results, continue. Return STRICT JSON. If done, set actions to [].";
 
-      const content = await askIris({
-        delegatedToken,
-        model: selectedModel,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...dialogue.map((m) => ({ role: m.role, content: m.content })),
-          { role: "user", content: planningInstruction },
-        ],
-      });
+      let content: string;
+      try {
+        content = await askIris({
+          delegatedToken: grant.delegatedToken,
+          model: selectedModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...dialogue.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: planningInstruction },
+          ],
+        });
+      } catch (error) {
+        const irisError = error as Error & { status?: number; details?: string };
+        const detail = (irisError.details || irisError.message || "").toLowerCase();
+        const isInvalidToken = irisError.status === 401 || detail.includes("invalid_token");
+
+        if (!isInvalidToken) throw error;
+
+        try {
+          grant = await refreshDelegatedGrant(ctx, grant);
+        } catch {
+          throw new Error(
+            "Iris connector authorization is expired or invalid. Please reconnect to Iris and try again.",
+          );
+        }
+
+        content = await askIris({
+          delegatedToken: grant.delegatedToken,
+          model: selectedModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...dialogue.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: planningInstruction },
+          ],
+        });
+      }
 
       const planned = tryParseJsonObject(content);
       if (!planned || typeof planned !== "object") {

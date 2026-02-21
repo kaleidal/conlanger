@@ -12,7 +12,8 @@
 
   let { languageId, languageName = "Language", canWrite }: Props = $props();
 
-  type Msg = { role: "user" | "assistant"; content: string };
+  type ToolExecution = { tool: string; ok: boolean; result: unknown };
+  type Msg = { role: "user" | "assistant"; content: string; toolExecutions?: ToolExecution[] };
 
   let messages = $state<Msg[]>([
     {
@@ -97,15 +98,22 @@
       const response = await runAction<{
         reply: string;
         model: string;
-        toolExecutions?: Array<{ tool: string; ok: boolean; result: unknown }>;
+        toolExecutions?: ToolExecution[];
       }>("assistant:chat", {
         userId,
         languageId,
         model,
-        messages,
+        messages: messages.map((m) => ({ role: m.role, content: m.content })),
       });
 
-      messages = [...messages, { role: "assistant", content: response.reply || "(No response)" }];
+      messages = [
+        ...messages,
+        {
+          role: "assistant",
+          content: response.reply || "(No response)",
+          toolExecutions: response.toolExecutions || [],
+        },
+      ];
       toolSummary = (response.toolExecutions || []).map((t) => `${t.ok ? "ok" : "err"}:${t.tool}`);
       await scrollToBottom();
     } catch (e) {
@@ -155,6 +163,18 @@
         <div class="msg {msg.role}">
           <span class="msg-role">{msg.role === "user" ? "You" : "Assistant"}</span>
           <p>{msg.content}</p>
+          {#if msg.role === "assistant" && msg.toolExecutions && msg.toolExecutions.length > 0}
+            <div class="tool-calls">
+              {#each msg.toolExecutions as exec}
+                <div class="tool-call">
+                  <span class="tool-call-name {exec.ok ? 'ok' : 'err'}">
+                    {exec.ok ? "ok" : "err"}:{exec.tool}
+                  </span>
+                  <pre>{JSON.stringify(exec.result, null, 2)}</pre>
+                </div>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/each}
     {/if}
@@ -319,6 +339,51 @@
     white-space: pre-wrap;
     line-height: 1.45;
     font-size: var(--size-sm);
+  }
+
+  .tool-calls {
+    margin-top: var(--space-2);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .tool-call {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-secondary);
+    padding: var(--space-2);
+  }
+
+  .tool-call-name {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--color-border);
+    margin-bottom: var(--space-2);
+  }
+
+  .tool-call-name.ok {
+    color: var(--color-success);
+    border-color: color-mix(in srgb, var(--color-success) 40%, var(--color-border));
+  }
+
+  .tool-call-name.err {
+    color: var(--color-error);
+    border-color: color-mix(in srgb, var(--color-error) 40%, var(--color-border));
+  }
+
+  .tool-call pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--color-text-secondary);
+    max-height: 180px;
+    overflow: auto;
   }
 
   .tool-strip {
