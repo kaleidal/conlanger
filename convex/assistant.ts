@@ -141,6 +141,13 @@ function definitionsToObjects(defs?: string[]) {
   return defs.map((meaning) => ({ meaning }));
 }
 
+function definitionMeanings(definitions: any[] | undefined): string[] {
+  if (!Array.isArray(definitions)) return [];
+  return definitions
+    .map((item) => (item && typeof item.meaning === "string" ? item.meaning.trim() : ""))
+    .filter(Boolean);
+}
+
 function normalizeToolArgs(raw: unknown, context: { languageId: string; userId: string }) {
   const args = raw && typeof raw === "object" ? { ...(raw as Record<string, unknown>) } : {};
   if ("languageId" in args) args.languageId = context.languageId;
@@ -196,6 +203,11 @@ async function loadSnapshot(ctx: any, languageId: string, userId: string) {
       lemma: w.lemma,
       ipa: w.ipa,
       wordClass: w.wordClass,
+      definitions: definitionMeanings(w.definitions).slice(0, 3),
+      usageNotes: w.usageNotes || null,
+      notes: w.notes || null,
+      semanticFields: Array.isArray(w.semanticFields) ? w.semanticFields.slice(0, 8) : [],
+      tags: Array.isArray(w.tags) ? w.tags.slice(0, 8) : [],
     })),
     phonemes: phonemes.slice(0, 240).map((p: any) => ({
       _id: p._id,
