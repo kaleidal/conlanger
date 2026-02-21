@@ -38,6 +38,18 @@
     },
   ]);
 
+  function stripInitialAssistantGreeting(history: Msg[]): Msg[] {
+    if (history.length === 0) return history;
+    const first = history[0];
+    if (
+      first.role === "assistant" &&
+      first.content.startsWith("Assistant ready for")
+    ) {
+      return history.slice(1);
+    }
+    return history;
+  }
+
   let prompt = $state("");
   let model = $state("anthropic/claude-sonnet-4.5");
   let sending = $state(false);
@@ -192,7 +204,10 @@
       importPreview,
     ].join("\n\n");
 
-    const nextMessages: Msg[] = [...messages, { role: "user", content: importPrompt }];
+    const nextMessages: Msg[] = [
+      ...stripInitialAssistantGreeting(messages),
+      { role: "user", content: importPrompt },
+    ];
     messages = nextMessages;
 
     try {
@@ -305,7 +320,10 @@
     error = null;
     importError = null;
     sending = true;
-    messages = [...messages, { role: "user", content: text }];
+    messages = [
+      ...stripInitialAssistantGreeting(messages),
+      { role: "user", content: text },
+    ];
     prompt = "";
     await scrollToBottom();
 
