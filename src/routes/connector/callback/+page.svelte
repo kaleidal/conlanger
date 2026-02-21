@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import { goto } from "$app/navigation";
-  import { getUserId, isAuthenticated, runAction } from "$lib/convex";
+  import { auth, getUserId, isAuthenticated, runAction } from "$lib/convex";
   import {
     clearConnectorState,
     handleConnectorCallback,
@@ -10,7 +11,23 @@
   let loading = $state(true);
   let error = $state("");
 
+  async function waitForAuthReady(): Promise<void> {
+    const current = get(auth);
+    if (!current.loading) return;
+
+    await new Promise<void>((resolve) => {
+      const unsubscribe = auth.subscribe((state) => {
+        if (!state.loading) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+  }
+
   onMount(async () => {
+    await waitForAuthReady();
+
     if (!$isAuthenticated) {
       goto("/");
       return;
