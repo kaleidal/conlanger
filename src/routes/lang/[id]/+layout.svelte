@@ -146,22 +146,24 @@
 		</div>
 	</header>
 	
-	<nav class="language-nav">
-		{#each navItems as item}
-			<a 
-				href={item.href}
-				class="nav-link"
-				class:active={isActive(item.href, item.exact)}
-			>
-				{item.label}
-			</a>
-		{/each}
-	</nav>
-	
 	<div class="language-body">
-		<main class="language-content">
-			{@render children()}
-		</main>
+		<section class="language-main-column">
+			<nav class="language-nav">
+				{#each navItems as item}
+					<a 
+						href={item.href}
+						class="nav-link"
+						class:active={isActive(item.href, item.exact)}
+					>
+						{item.label}
+					</a>
+				{/each}
+			</nav>
+
+			<main class="language-content">
+				{@render children()}
+			</main>
+		</section>
 
 		{#if showActivity && showAssistant}
 			<aside class="activity-sidebar split" in:fly={{ x: 24, duration: 180 }} out:fly={{ x: 24, duration: 150 }}>
@@ -368,6 +370,14 @@
 		min-height: 0;
 		overflow: hidden;
 	}
+
+	.language-main-column {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
 	
 	.language-content {
 		flex: 1;
@@ -410,7 +420,7 @@
 	}
 
 	.activity-sidebar.split {
-		width: 300px;
+		width: 260px;
 	}
 
 	.activity-scroll {
