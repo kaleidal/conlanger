@@ -162,30 +162,51 @@
 		<main class="language-content">
 			{@render children()}
 		</main>
-		
-		{#if showActivity}
-			<aside class="activity-sidebar" in:fly={{ x: 24, duration: 180 }} out:fly={{ x: 24, duration: 150 }}>
-				<div class="sidebar-header">
-					<h2>Activity</h2>
-					<button class="close-btn" onclick={() => showActivity = false} aria-label="Close activity panel">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-							<line x1="18" y1="6" x2="6" y2="18"></line>
-							<line x1="6" y1="6" x2="18" y2="18"></line>
-						</svg>
-					</button>
-				</div>
-				<ActivityFeed activities={$activityLog} />
-			</aside>
-		{/if}
 
-		{#if showAssistant}
-			<div in:fly={{ x: 24, duration: 220 }} out:fly={{ x: 24, duration: 150 }}>
-				<LanguageAssistantSidebar
-					languageId={languageId}
-					languageName={$currentLanguage?.name ?? 'Language'}
-					canWrite={canEdit}
-				/>
-			</div>
+		{#if showActivity || showAssistant}
+			<aside
+				class="right-toolbar"
+				class:dual-open={showActivity && showAssistant}
+				in:fly={{ x: 24, duration: 180 }}
+				out:fly={{ x: 24, duration: 150 }}
+			>
+				{#if showAssistant}
+					<section class="toolbar-panel assistant-panel-wrap">
+						<div class="sidebar-header">
+							<h2>Language Assistant</h2>
+							<button class="close-btn" onclick={() => showAssistant = false} aria-label="Close assistant panel">
+								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<line x1="18" y1="6" x2="6" y2="18"></line>
+									<line x1="6" y1="6" x2="18" y2="18"></line>
+								</svg>
+							</button>
+						</div>
+						<LanguageAssistantSidebar
+							languageId={languageId}
+							languageName={$currentLanguage?.name ?? 'Language'}
+							canWrite={canEdit}
+							embedded={true}
+						/>
+					</section>
+				{/if}
+
+				{#if showActivity}
+					<section class="toolbar-panel activity-panel-wrap">
+						<div class="sidebar-header">
+							<h2>Activity</h2>
+							<button class="close-btn" onclick={() => showActivity = false} aria-label="Close activity panel">
+								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<line x1="18" y1="6" x2="6" y2="18"></line>
+									<line x1="6" y1="6" x2="18" y2="18"></line>
+								</svg>
+							</button>
+						</div>
+						<div class="activity-scroll">
+							<ActivityFeed activities={$activityLog} />
+						</div>
+					</section>
+				{/if}
+			</aside>
 		{/if}
 	</div>
 </div>
@@ -358,12 +379,39 @@
 		max-width: 1200px;
 	}
 	
-	.activity-sidebar {
-		width: 320px;
+	.right-toolbar {
+		width: 360px;
 		border-left: 1px solid var(--color-border);
 		background: var(--color-bg-secondary);
-		overflow-y: auto;
+		overflow: hidden;
 		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+	}
+
+	.right-toolbar.dual-open {
+		width: 340px;
+	}
+
+	.toolbar-panel {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		flex: 1;
+	}
+
+	.toolbar-panel + .toolbar-panel {
+		border-top: 1px solid var(--color-border);
+	}
+
+	.activity-panel-wrap {
+		max-height: 38%;
+	}
+
+	.activity-scroll {
+		overflow-y: auto;
+		min-height: 0;
 	}
 	
 	.sidebar-header {
@@ -398,7 +446,7 @@
 	}
 	
 	@media (max-width: 768px) {
-		.activity-sidebar {
+		.right-toolbar {
 			position: fixed;
 			top: 0;
 			right: 0;

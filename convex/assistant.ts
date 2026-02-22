@@ -85,7 +85,15 @@ const GUIDE_TOPICS: Record<string, { title: string; description: string }> = {
 
 const TOOL_NAMES = [
   "get_full_snapshot",
+  "get_language_summary",
+  "get_lexicon",
+  "get_phonology",
+  "get_morphology",
+  "get_syntax",
+  "get_scripts",
+  "get_texts",
   "search_words",
+  "search_phonemes",
   "create_word",
   "update_word",
   "delete_word",
@@ -229,6 +237,85 @@ async function loadSnapshot(ctx: any, languageId: string, userId: string) {
   };
 }
 
+async function loadLanguageSummary(ctx: any, languageId: string, userId: string) {
+  const snapshot = await loadSnapshot(ctx, languageId, userId);
+  return {
+    language: snapshot.language,
+    counts: snapshot.counts,
+  };
+}
+
+async function loadLexiconSlice(ctx: any, languageId: string, limit = 200) {
+  const words = await ctx.runQuery(api.lexicon.getWords, { languageId: languageId as any });
+  const size = Math.max(1, Math.min(400, Number(limit || 200)));
+  return words.slice(0, size).map((word: any) => ({
+    _id: word._id,
+    lemma: word.lemma,
+    ipa: word.ipa,
+    wordClass: word.wordClass,
+    definitions: definitionMeanings(word.definitions).slice(0, 4),
+    tags: Array.isArray(word.tags) ? word.tags.slice(0, 10) : [],
+    semanticFields: Array.isArray(word.semanticFields) ? word.semanticFields.slice(0, 10) : [],
+  }));
+}
+
+async function loadPhonologySlice(ctx: any, languageId: string, limit = 250) {
+  const phonemes = await ctx.runQuery(api.phonology.getPhonemes, { languageId: languageId as any });
+  const size = Math.max(1, Math.min(500, Number(limit || 250)));
+  return phonemes.slice(0, size).map((phoneme: any) => ({
+    _id: phoneme._id,
+    symbol: phoneme.symbol,
+    ipa: phoneme.ipa,
+    type: phoneme.type,
+    romanization: phoneme.romanization || null,
+  }));
+}
+
+async function loadMorphologySlice(ctx: any, languageId: string, limit = 180) {
+  const morphemes = await ctx.runQuery(api.morphology.getMorphemes, { languageId: languageId as any });
+  const size = Math.max(1, Math.min(300, Number(limit || 180)));
+  return morphemes.slice(0, size).map((morpheme: any) => ({
+    _id: morpheme._id,
+    form: morpheme.form,
+    gloss: morpheme.gloss,
+    type: morpheme.type,
+  }));
+}
+
+async function loadSyntaxSlice(ctx: any, languageId: string, limit = 180) {
+  const syntaxRules = await ctx.runQuery(api.syntax.getSyntaxRules, { languageId: languageId as any });
+  const size = Math.max(1, Math.min(300, Number(limit || 180)));
+  return syntaxRules.slice(0, size).map((rule: any) => ({
+    _id: rule._id,
+    name: rule.name,
+    ruleType: rule.ruleType,
+    pattern: rule.pattern,
+    output: rule.output || null,
+  }));
+}
+
+async function loadScriptsSlice(ctx: any, languageId: string, limit = 120) {
+  const scripts = await ctx.runQuery(api.scripts.getScripts, { languageId: languageId as any });
+  const size = Math.max(1, Math.min(200, Number(limit || 120)));
+  return scripts.slice(0, size).map((script: any) => ({
+    _id: script._id,
+    name: script.name,
+    type: script.type,
+    direction: script.direction,
+  }));
+}
+
+async function loadTextsSlice(ctx: any, languageId: string, limit = 120) {
+  const texts = await ctx.runQuery(api.texts.getTexts, { languageId: languageId as any });
+  const size = Math.max(1, Math.min(200, Number(limit || 120)));
+  return texts.slice(0, size).map((text: any) => ({
+    _id: text._id,
+    title: text.title,
+    source: text.source || null,
+    updatedAt: text.updatedAt,
+  }));
+}
+
 function buildSystemPrompt(snapshotSummary: any, canWrite: boolean) {
   return [
     "You are Conlanger Agent inside a language workspace.",
@@ -243,7 +330,10 @@ function buildSystemPrompt(snapshotSummary: any, canWrite: boolean) {
     "If no actions are needed, use actions: []",
     `Allowed tools: ${TOOL_NAMES.join(", ")}`,
     "Tool usage guidelines:",
-    "- Prefer dashboard_call for broad dashboard operations.",
+    "- Prefer targeted read tools (get_phonology, get_lexicon, get_morphology, get_syntax, get_scripts, get_texts) before get_full_snapshot.",
+    "- Use get_language_summary first for broad context.",
+    "- Use get_full_snapshot only when broad context is truly required.",
+    "- Prefer dashboard_call only for operations not covered by dedicated tools.",
     "- Use guide_topics/guide_lookup when the user asks for explanations or learning help.",
     "Data constraints:",
     `- wordClass: ${WORD_CLASSES.join(", ")}`,
@@ -480,6 +570,78 @@ async function askIris(input: {
   return String(payload?.content || "");
 }
 
+async function askIrisStream(input: {
+  delegatedToken: string;
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  onToken?: (token: string) => Promise<void>;
+}) {
+  const response = await fetch(`${IRIS_HTTP_URL}/delegated/infer/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${input.delegatedToken}`,
+    },
+    body: JSON.stringify({
+      model: input.model,
+      messages: input.messages,
+      userPresent: true,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    const payload = await parseJsonSafe(response);
+    const details = payload?.error_description || payload?.details || payload?.error || "Unknown error";
+    const err = new Error(`Iris delegated streaming failed (${response.status}): ${details}`) as Error & {
+      status?: number;
+      details?: string;
+    };
+    err.status = response.status;
+    err.details = String(details);
+    throw err;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+
+    for (const event of events) {
+      const line = event
+        .split("\n")
+        .find((entry) => entry.startsWith("data:"));
+
+      if (!line) continue;
+
+      const payloadRaw = line.slice(5).trim();
+      if (!payloadRaw) continue;
+
+      try {
+        const payload = JSON.parse(payloadRaw);
+        const token = typeof payload?.token === "string" ? payload.token : "";
+        if (token) {
+          content += token;
+          if (input.onToken) {
+            await input.onToken(token);
+          }
+        }
+      } catch {
+        // Ignore malformed chunks.
+      }
+    }
+  }
+
+  return content;
+}
+
 async function runDashboardCall(
   ctx: any,
   input: any,
@@ -577,6 +739,34 @@ async function runTool(
         const snapshot = await loadSnapshot(ctx, context.languageId, context.userId);
         return { tool: toolName, ok: true, result: snapshot };
       }
+      case "get_language_summary": {
+        const summary = await loadLanguageSummary(ctx, context.languageId, context.userId);
+        return { tool: toolName, ok: true, result: summary };
+      }
+      case "get_lexicon": {
+        const data = await loadLexiconSlice(ctx, context.languageId, Number(input?.limit || 200));
+        return { tool: toolName, ok: true, result: data };
+      }
+      case "get_phonology": {
+        const data = await loadPhonologySlice(ctx, context.languageId, Number(input?.limit || 250));
+        return { tool: toolName, ok: true, result: data };
+      }
+      case "get_morphology": {
+        const data = await loadMorphologySlice(ctx, context.languageId, Number(input?.limit || 180));
+        return { tool: toolName, ok: true, result: data };
+      }
+      case "get_syntax": {
+        const data = await loadSyntaxSlice(ctx, context.languageId, Number(input?.limit || 180));
+        return { tool: toolName, ok: true, result: data };
+      }
+      case "get_scripts": {
+        const data = await loadScriptsSlice(ctx, context.languageId, Number(input?.limit || 120));
+        return { tool: toolName, ok: true, result: data };
+      }
+      case "get_texts": {
+        const data = await loadTextsSlice(ctx, context.languageId, Number(input?.limit || 120));
+        return { tool: toolName, ok: true, result: data };
+      }
       case "search_words": {
         const query = String(input?.query || "");
         const words = await ctx.runQuery(api.lexicon.searchWords, {
@@ -585,6 +775,24 @@ async function runTool(
         });
         const limit = Math.max(1, Math.min(100, Number(input?.limit || 20)));
         return { tool: toolName, ok: true, result: words.slice(0, limit) };
+      }
+      case "search_phonemes": {
+        const query = String(input?.query || "").trim().toLowerCase();
+        const limit = Math.max(1, Math.min(120, Number(input?.limit || 40)));
+        const phonemes = await ctx.runQuery(api.phonology.getPhonemes, {
+          languageId: context.languageId as any,
+        });
+        const result = !query
+          ? phonemes.slice(0, limit)
+          : phonemes
+              .filter((phoneme: any) => {
+                const symbol = String(phoneme.symbol || "").toLowerCase();
+                const ipa = String(phoneme.ipa || "").toLowerCase();
+                const type = String(phoneme.type || "").toLowerCase();
+                return symbol.includes(query) || ipa.includes(query) || type.includes(query);
+              })
+              .slice(0, limit);
+        return { tool: toolName, ok: true, result };
       }
       case "create_word": {
         const id = await ctx.runMutation(api.lexicon.createWord, {
@@ -709,6 +917,7 @@ async function runAgentLoop(
   },
   hooks?: {
     onThought?: (message: string) => Promise<void>;
+    onStream?: (message: string) => Promise<void>;
     onToolStart?: (tool: string, input: unknown) => Promise<void>;
     onToolResult?: (result: ToolExecution) => Promise<void>;
   },
@@ -747,7 +956,10 @@ async function runAgentLoop(
 
     let content: string;
     try {
-      content = await askIris({
+      let streamedReply = "";
+      let lastStreamEmitLength = 0;
+
+      content = await askIrisStream({
         delegatedToken: grant.delegatedToken,
         model: selectedModel,
         messages: [
@@ -755,31 +967,56 @@ async function runAgentLoop(
           ...dialogue.map((m) => ({ role: m.role, content: m.content })),
           { role: "user", content: planningInstruction },
         ],
+        onToken: async (token) => {
+          streamedReply += token;
+          if (!hooks?.onStream) return;
+          if (streamedReply.length - lastStreamEmitLength < 48) return;
+          lastStreamEmitLength = streamedReply.length;
+          await hooks.onStream(streamedReply);
+        },
       });
+
+      if (hooks?.onStream && streamedReply && streamedReply.length !== lastStreamEmitLength) {
+        await hooks.onStream(streamedReply);
+      }
+
+      if (!content.trim()) {
+        content = streamedReply;
+      }
     } catch (error) {
       const irisError = error as Error & { status?: number; details?: string };
       const detail = (irisError.details || irisError.message || "").toLowerCase();
       const isInvalidToken = irisError.status === 401 || detail.includes("invalid_token");
 
-      if (!isInvalidToken) throw error;
+      if (!isInvalidToken) {
+        content = await askIris({
+          delegatedToken: grant.delegatedToken,
+          model: selectedModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...dialogue.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: planningInstruction },
+          ],
+        });
+      } else {
+        try {
+          grant = await refreshDelegatedGrant(ctx, grant);
+        } catch {
+          throw new Error(
+            "Iris connector authorization is expired or invalid. Please reconnect to Iris and try again.",
+          );
+        }
 
-      try {
-        grant = await refreshDelegatedGrant(ctx, grant);
-      } catch {
-        throw new Error(
-          "Iris connector authorization is expired or invalid. Please reconnect to Iris and try again.",
-        );
+        content = await askIris({
+          delegatedToken: grant.delegatedToken,
+          model: selectedModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...dialogue.map((m) => ({ role: m.role, content: m.content })),
+            { role: "user", content: planningInstruction },
+          ],
+        });
       }
-
-      content = await askIris({
-        delegatedToken: grant.delegatedToken,
-        model: selectedModel,
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...dialogue.map((m) => ({ role: m.role, content: m.content })),
-          { role: "user", content: planningInstruction },
-        ],
-      });
     }
 
     const planned = tryParseJsonObject(content);
@@ -846,6 +1083,7 @@ export const appendRunEventInternal = internalMutation({
     kind: v.union(
       v.literal("status"),
       v.literal("assistant_thought"),
+      v.literal("assistant_stream"),
       v.literal("tool_start"),
       v.literal("tool_result"),
       v.literal("final"),
@@ -973,6 +1211,13 @@ export const processRunInternal = internalAction({
             await ctx.runMutation(internal.assistant.appendRunEventInternal, {
               runId: args.runId,
               kind: "assistant_thought",
+              message,
+            });
+          },
+          onStream: async (message) => {
+            await ctx.runMutation(internal.assistant.appendRunEventInternal, {
+              runId: args.runId,
+              kind: "assistant_stream",
               message,
             });
           },

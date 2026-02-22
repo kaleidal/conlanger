@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { Card, Button, Input, Modal, Select, Badge, Textarea, IPAKeyboard, HelpTooltip } from '$lib/components/ui';
+	import { Card, Button, Input, Modal, Select, Badge, Textarea, IPAKeyboard, HelpTooltip, Checkbox } from '$lib/components/ui';
 	import { runQuery, runMutation, getUserId } from '$lib/convex';
 	import { onMount } from 'svelte';
 	
@@ -36,6 +36,8 @@
 	let showIPAKeyboard = $state(false);
 	let saving = $state(false);
 	let deleteConfirmId = $state<string | null>(null);
+	let selectedWordIds = $state<Set<string>>(new Set());
+	let phonemes = $state<Array<{ symbol?: string; ipa?: string }>>([]);
 	
 	type WordClass = 'noun' | 'verb' | 'adjective' | 'adverb' | 'pronoun' | 'determiner' | 'preposition' | 'postposition' | 'conjunction' | 'interjection' | 'particle' | 'numeral' | 'classifier' | 'auxiliary' | 'copula' | 'other';
 	type RelationType = 'synonym' | 'antonym' | 'hypernym' | 'hyponym' | 'meronym' | 'holonym' | 'derived' | 'compound' | 'cognate' | 'doublet';
@@ -93,6 +95,44 @@
 	
 	let words = $state<Word[]>([]);
 	let loading = $state(true);
+
+	const selectedWordsCount = $derived(selectedWordIds.size);
+	const normalizedPhonemeInventory = $derived.by(() => {
+		const inventory = new Set<string>();
+		for (const phoneme of phonemes) {
+			const symbol = phoneme.symbol?.trim().toLocaleLowerCase();
+			const ipa = phoneme.ipa?.trim().toLocaleLowerCase();
+			if (symbol) inventory.add(symbol);
+			if (ipa) inventory.add(ipa);
+		}
+		return Array.from(inventory).sort((a, b) => b.length - a.length);
+	});
+	const lemmaValidationError = $derived.by(() => {
+		const lemma = wordForm.lemma.trim();
+		if (!lemma) return undefined;
+		if (!/^[\p{L}\p{M}]+$/u.test(lemma)) {
+			return 'Lemma must contain letters only.';
+		}
+
+		if (normalizedPhonemeInventory.length === 0) return undefined;
+
+		let remaining = lemma.toLocaleLowerCase();
+		while (remaining.length > 0) {
+			let matched = false;
+			for (const phonemeSymbol of normalizedPhonemeInventory) {
+				if (remaining.startsWith(phonemeSymbol)) {
+					remaining = remaining.slice(phonemeSymbol.length);
+					matched = true;
+					break;
+				}
+			}
+			if (!matched) {
+				return `Lemma contains symbol not in your phoneme inventory: "${remaining[0]}".`;
+			}
+		}
+
+		return undefined;
+	});
 	
 	onMount(async () => {
 		await loadData();
@@ -101,8 +141,12 @@
 	async function loadData() {
 		loading = true;
 		try {
-			const wordsData = await runQuery<Word[]>('lexicon:getWords', { languageId });
+			const [wordsData, phonemeData] = await Promise.all([
+				runQuery<Word[]>('lexicon:getWords', { languageId }),
+				runQuery<Array<{ symbol?: string; ipa?: string }>>('phonology:getPhonemes', { languageId })
+			]);
 			words = wordsData ?? [];
+			phonemes = phonemeData ?? [];
 		} catch (e) {
 			console.error('Failed to load lexicon data:', e);
 		} finally {
@@ -132,6 +176,8 @@
 		
 		return result.sort((a, b) => a.lemma.localeCompare(b.lemma));
 	});
+
+	const allFilteredSelected = $derived(filteredWords.length > 0 && filteredWords.every(word => selectedWordIds.has(word._id)));
 	
 	const allTags = $derived.by(() => {
 		const tagSet = new Set<string>();
@@ -218,6 +264,7 @@
 	}
 	
 	async function saveWord() {
+		if (lemmaValidationError) return;
 		saving = true;
 		try {
 			const payload = {
@@ -270,6 +317,41 @@
 		});
 		await loadData();
 		deleteConfirmId = null;
+	}
+
+	function toggleWordSelected(wordId: string, checked: boolean) {
+		const next = new Set(selectedWordIds);
+		if (checked) {
+			next.add(wordId);
+		} else {
+			next.delete(wordId);
+		}
+		selectedWordIds = next;
+	}
+
+	function toggleSelectAllFiltered(checked: boolean) {
+		if (!checked) {
+			selectedWordIds = new Set();
+			return;
+		}
+		selectedWordIds = new Set(filteredWords.map(word => word._id));
+	}
+
+	async function deleteSelectedWords() {
+		if (selectedWordIds.size === 0) return;
+		saving = true;
+		try {
+			for (const wordId of selectedWordIds) {
+				await runMutation('lexicon:deleteWord', {
+					userId: getUserId(),
+					wordId
+				});
+			}
+			selectedWordIds = new Set();
+			await loadData();
+		} finally {
+			saving = false;
+		}
 	}
 	
 	function openRelationModal(word: Word) {
@@ -373,6 +455,13 @@
 						/>
 					{/if}
 				</div>
+				<div class="selection-controls">
+					<Checkbox checked={allFilteredSelected} onchange={(event) => toggleSelectAllFiltered((event.currentTarget as HTMLInputElement).checked)} label="Select all" />
+					{#if selectedWordsCount > 0}
+						<span class="selection-count">{selectedWordsCount} selected</span>
+						<Button size="sm" variant="danger" onclick={deleteSelectedWords} loading={saving}>Delete Selected</Button>
+					{/if}
+				</div>
 			</div>
 		</Card>
 		
@@ -381,6 +470,7 @@
 				<Card>
 					<div class="word-header">
 						<div class="word-title">
+							<Checkbox checked={selectedWordIds.has(word._id)} onchange={(event) => toggleWordSelected(word._id, (event.currentTarget as HTMLInputElement).checked)} />
 							<span class="word-lemma">{word.lemma}</span>
 							{#if word.ipa}
 								<span class="word-ipa">/{word.ipa}/</span>
@@ -471,7 +561,10 @@
 		<div class="form-row three-col">
 			<div class="form-group">
 				<label for="word-lemma">Lemma <HelpTooltip key="wordLemma" inline /></label>
-				<Input id="word-lemma" bind:value={wordForm.lemma} placeholder="Enter word..." />
+				<Input id="word-lemma" bind:value={wordForm.lemma} placeholder="Enter word..." error={lemmaValidationError} />
+				{#if normalizedPhonemeInventory.length > 0}
+					<span class="form-hint">Allowed symbols from phonology: {normalizedPhonemeInventory.join(', ')}</span>
+				{/if}
 			</div>
 			<div class="form-group">
 				<label for="word-ipa">IPA Pronunciation <HelpTooltip key="wordIPA" inline /></label>
@@ -570,7 +663,7 @@
 	
 	{#snippet footer()}
 		<Button variant="secondary" onclick={() => wordModalOpen = false}>Cancel</Button>
-		<Button variant="primary" onclick={saveWord} loading={saving} disabled={!wordForm.lemma}>
+		<Button variant="primary" onclick={saveWord} loading={saving} disabled={!wordForm.lemma || !!lemmaValidationError}>
 			{editingWord ? 'Update' : 'Add'} Word
 		</Button>
 	{/snippet}
@@ -674,6 +767,17 @@
 	.filter-controls {
 		display: flex;
 		gap: var(--space-2);
+	}
+
+	.selection-controls {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.selection-count {
+		font-size: var(--size-sm);
+		color: var(--color-text-secondary);
 	}
 	
 	.filter-controls :global(.select) {

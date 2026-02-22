@@ -13,14 +13,15 @@
     languageId: string;
     languageName?: string;
     canWrite: boolean;
+    embedded?: boolean;
   }
 
-  let { languageId, languageName = "Language", canWrite }: Props = $props();
+  let { languageId, languageName = "Language", canWrite, embedded = false }: Props = $props();
 
   type Msg = { role: "user" | "assistant"; content: string };
   type RunEvent = {
     _id: string;
-    kind: "status" | "assistant_thought" | "tool_start" | "tool_result" | "final" | "error";
+    kind: "status" | "assistant_thought" | "assistant_stream" | "tool_start" | "tool_result" | "final" | "error";
     message?: string;
     tool?: string;
     ok?: boolean;
@@ -28,15 +29,7 @@
     sequence: number;
   };
 
-  let messages = $state<Msg[]>([
-    {
-      role: "assistant",
-      content:
-        canWrite
-          ? `Assistant ready for ${languageName}. I can inspect and edit words/phonemes directly.`
-          : `Assistant ready for ${languageName}. This language is read-only for your account, so I can analyze but not edit.`,
-    },
-  ]);
+  let messages = $state<Msg[]>([]);
 
   function stripInitialAssistantGreeting(history: Msg[]): Msg[] {
     if (history.length === 0) return history;
@@ -49,6 +42,19 @@
     }
     return history;
   }
+
+  $effect(() => {
+    if (messages.length > 0) return;
+    messages = [
+      {
+        role: "assistant",
+        content:
+          canWrite
+            ? `Assistant ready for ${languageName}. I can inspect and edit words/phonemes directly.`
+            : `Assistant ready for ${languageName}. This language is read-only for your account, so I can analyze but not edit.`,
+      },
+    ];
+  });
 
   let prompt = $state("");
   let model = $state("anthropic/claude-sonnet-4.5");
@@ -69,6 +75,23 @@
   let eventsUnsubscribe: (() => void) | null = null;
   let chatBody: HTMLDivElement | null = null;
   const hasSentUserMessage = $derived(messages.some((message) => message.role === "user"));
+  const lastUserMessageIndex = $derived.by(() => {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (messages[index]?.role === "user") {
+        return index;
+      }
+    }
+    return -1;
+  });
+  const liveAssistantDraft = $derived.by(() => {
+    for (let index = liveEvents.length - 1; index >= 0; index--) {
+      const event = liveEvents[index];
+      if ((event.kind === "assistant_stream" || event.kind === "assistant_thought") && event.message) {
+        return event.message;
+      }
+    }
+    return "";
+  });
 
   function renderAssistantMarkdown(content: string): string {
     return marked.parse(content, { gfm: true, breaks: true }) as string;
@@ -353,16 +376,18 @@
   onDestroy(() => stopRunSubscriptions());
 </script>
 
-<aside class="assistant-panel">
-  <div class="assistant-header">
-    <div>
-      <h2>Language Assistant</h2>
-      <p>{languageName}</p>
+<aside class="assistant-panel" class:embedded>
+  {#if !embedded}
+    <div class="assistant-header">
+      <div>
+        <h2>Language Assistant</h2>
+        <p>{languageName}</p>
+      </div>
+      <span class="write-badge {canWrite ? 'write' : 'read'}">
+        {canWrite ? "Can edit" : "Read only"}
+      </span>
     </div>
-    <span class="write-badge {canWrite ? 'write' : 'read'}">
-      {canWrite ? "Can edit" : "Read only"}
-    </span>
-  </div>
+  {/if}
 
   <div class="assistant-body" bind:this={chatBody}>
     {#if connectorLoading}
@@ -417,36 +442,7 @@
         </div>
       {/if}
 
-      {#if activeRunId}
-        <div class="run-stream">
-          <div class="run-stream-header">
-            <span>Agent run</span>
-            <span class="status {activeRunStatus || 'queued'}">{activeRunStatus || "queued"}</span>
-          </div>
-
-          {#each liveEvents as event}
-            <div class="run-event">
-              <div class="run-event-line">
-                <span class="kind">{event.kind}</span>
-                {#if event.tool}
-                  <span class="tool">{event.tool}</span>
-                {/if}
-                {#if event.ok !== undefined}
-                  <span class="ok {event.ok ? 'yes' : 'no'}">{event.ok ? "ok" : "err"}</span>
-                {/if}
-              </div>
-              {#if event.message}
-                <p>{event.message}</p>
-              {/if}
-              {#if event.payload !== undefined}
-                <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-              {/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      {#each messages as msg}
+      {#each messages as msg, index}
         <div class="msg {msg.role}">
           <span class="msg-role">{msg.role === "user" ? "You" : "Assistant"}</span>
           {#if msg.role === "assistant"}
@@ -455,6 +451,42 @@
             <p>{msg.content}</p>
           {/if}
         </div>
+
+        {#if activeRunId && msg.role === "user" && index === lastUserMessageIndex}
+          {#if liveAssistantDraft}
+            <div class="msg assistant streaming">
+              <span class="msg-role">Assistant (live)</span>
+              <div class="msg-markdown">{@html renderAssistantMarkdown(liveAssistantDraft)}</div>
+            </div>
+          {/if}
+
+          <div class="run-stream">
+            <div class="run-stream-header">
+              <span>Agent run</span>
+              <span class="status {activeRunStatus || 'queued'}">{activeRunStatus || "queued"}</span>
+            </div>
+
+            {#each liveEvents as event}
+              <div class="run-event">
+                <div class="run-event-line">
+                  <span class="kind">{event.kind}</span>
+                  {#if event.tool}
+                    <span class="tool">{event.tool}</span>
+                  {/if}
+                  {#if event.ok !== undefined}
+                    <span class="ok {event.ok ? 'yes' : 'no'}">{event.ok ? "ok" : "err"}</span>
+                  {/if}
+                </div>
+                {#if event.message}
+                  <p>{event.message}</p>
+                {/if}
+                {#if event.payload !== undefined}
+                  <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
       {/each}
     {/if}
   </div>
@@ -496,6 +528,12 @@
     flex-direction: column;
     border-left: 1px solid var(--color-border);
     background: var(--color-bg-secondary);
+  }
+
+  .assistant-panel.embedded {
+    width: 100%;
+    min-width: 0;
+    border-left: none;
   }
 
   .assistant-header {
@@ -647,6 +685,10 @@
   .msg.user {
     border-color: var(--color-accent);
     background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+
+  .msg.streaming {
+    border-style: dashed;
   }
 
   .msg-role {

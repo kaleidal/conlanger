@@ -118,19 +118,21 @@
 		{@render children()}
 	</main>
 	
-	<footer class="app-footer">
-		<div class="footer-content">
-			<div class="footer-links">
-				<a href="/about">About</a>
-				<a href="/privacy">Privacy Policy</a>
-				<a href="/terms">Terms of Service</a>
-				<a href="/guide">Guide</a>
+	{#if $page.url.pathname === '/'}
+		<footer class="app-footer">
+			<div class="footer-content">
+				<div class="footer-links">
+					<a href="/about">About</a>
+					<a href="/privacy">Privacy Policy</a>
+					<a href="/terms">Terms of Service</a>
+					<a href="/guide">Guide</a>
+				</div>
+				<div class="footer-copyright">
+					Conlanger - The ultimate platform for constructed languages
+				</div>
 			</div>
-			<div class="footer-copyright">
-				Conlanger - The ultimate platform for constructed languages
-			</div>
-		</div>
-	</footer>
+		</footer>
+	{/if}
 </div>
 
 <style>

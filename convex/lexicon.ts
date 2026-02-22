@@ -60,10 +60,43 @@ const etymology = v.object({
 export const getWords = query({
   args: { languageId: v.id("languages") },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const words = await ctx.db
       .query("words")
       .withIndex("by_language", (q) => q.eq("languageId", args.languageId))
       .collect();
+
+    if (words.length === 0) {
+      return words;
+    }
+
+    const relationships = await ctx.db.query("wordRelationships").collect();
+    const wordIds = new Set(words.map((word) => String(word._id)));
+
+    const byFrom = new Map<string, any[]>();
+    const byTo = new Map<string, any[]>();
+
+    for (const relationship of relationships) {
+      const fromWordId = String(relationship.fromWordId);
+      const toWordId = String(relationship.toWordId);
+
+      if (wordIds.has(fromWordId)) {
+        const existing = byFrom.get(fromWordId) || [];
+        existing.push(relationship);
+        byFrom.set(fromWordId, existing);
+      }
+
+      if (wordIds.has(toWordId)) {
+        const existing = byTo.get(toWordId) || [];
+        existing.push(relationship);
+        byTo.set(toWordId, existing);
+      }
+    }
+
+    return words.map((word) => ({
+      ...word,
+      relationsFrom: byFrom.get(String(word._id)) || [],
+      relationsTo: byTo.get(String(word._id)) || [],
+    }));
   },
 });
 

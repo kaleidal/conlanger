@@ -484,6 +484,7 @@ export default defineSchema({
     kind: v.union(
       v.literal("status"),
       v.literal("assistant_thought"),
+      v.literal("assistant_stream"),
       v.literal("tool_start"),
       v.literal("tool_result"),
       v.literal("final"),
