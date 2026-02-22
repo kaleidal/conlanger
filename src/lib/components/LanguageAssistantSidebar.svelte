@@ -543,10 +543,14 @@
     width: 100%;
     min-width: 0;
     border-left: none;
+    height: 100%;
+    max-height: 100%;
+    min-height: 0;
   }
 
   .assistant-panel.embedded .assistant-body {
-    overflow: hidden;
+    overflow-y: auto;
+    min-height: 0;
   }
 
   .assistant-header {

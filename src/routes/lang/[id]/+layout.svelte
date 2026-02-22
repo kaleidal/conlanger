@@ -403,6 +403,8 @@
 		flex-shrink: 0;
 		display: flex;
 		flex-direction: column;
+		height: 100%;
+		max-height: 100%;
 		min-height: 0;
 	}
 
@@ -418,6 +420,8 @@
 		flex-shrink: 0;
 		display: flex;
 		flex-direction: column;
+		height: 100%;
+		max-height: 100%;
 		min-height: 0;
 	}
 
@@ -426,7 +430,7 @@
 	}
 
 	.activity-scroll {
-		overflow: hidden;
+		overflow-y: auto;
 		min-height: 0;
 	}
 	
