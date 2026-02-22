@@ -382,7 +382,7 @@
 	.language-content {
 		flex: 1;
 		min-height: 0;
-		padding: var(--space-8) var(--space-6) 0;
+		padding: var(--space-8) var(--space-6) var(--space-10);
 		display: flex;
 		justify-content: center;
 		overflow-y: auto;
