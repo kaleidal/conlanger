@@ -20,6 +20,8 @@ type RunStatus = "queued" | "running" | "completed" | "failed";
 type DelegatedGrantState = {
   grantId: string;
   sourceAccessToken: string;
+  sourceRefreshToken?: string;
+  sourceAccessExpiresAt?: number;
   resource: string;
   scope: string;
   mode: "user_present" | "background";
@@ -379,6 +381,51 @@ async function exchangeDelegatedToken(input: {
   };
 }
 
+function normalizeSourceTokenPayload(payload: any) {
+  const sourceAccessToken = String(payload?.access_token_jwt || payload?.access_token || "");
+  const sourceRefreshToken = payload?.refresh_token ? String(payload.refresh_token) : undefined;
+  const sourceAccessExpiresAt = payload?.expires_in
+    ? Date.now() + Number(payload.expires_in) * 1000
+    : undefined;
+
+  if (!sourceAccessToken) {
+    throw new Error("Source access token missing from Ave token response.");
+  }
+
+  return { sourceAccessToken, sourceRefreshToken, sourceAccessExpiresAt };
+}
+
+function isSubjectTokenInvalidError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("subject token is invalid") || message.includes("invalid_grant");
+}
+
+async function refreshSourceAccessToken(refreshToken: string) {
+  if (!AVE_CLIENT_SECRET) {
+    throw new Error("AVE_CLIENT_SECRET is required for source token refresh.");
+  }
+
+  const response = await fetch(AVE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grantType: "refresh_token",
+      refreshToken,
+      clientId: AVE_CLIENT_ID,
+      clientSecret: AVE_CLIENT_SECRET,
+    }),
+  });
+
+  const payload = await parseJsonSafe(response);
+  if (!response.ok) {
+    const details = payload?.error_description || payload?.error || payload?.message || "Unknown error";
+    throw new Error(`Source token refresh failed (${response.status}): ${details}`);
+  }
+
+  return normalizeSourceTokenPayload(payload);
+}
+
 async function ensureDelegatedGrant(ctx: any, userId: string): Promise<DelegatedGrantState> {
   let grant =
     (await ctx.runQuery(api.connector.getConnectorGrant, {
@@ -394,26 +441,47 @@ async function ensureDelegatedGrant(ctx: any, userId: string): Promise<Delegated
     throw new Error("Iris connector is not connected. Connect Iris first.");
   }
 
+  let sourceAccessToken = String(grant.sourceAccessToken);
+  let sourceRefreshToken = grant.sourceRefreshToken ? String(grant.sourceRefreshToken) : undefined;
+  let sourceAccessExpiresAt = grant.sourceAccessExpiresAt ? Number(grant.sourceAccessExpiresAt) : undefined;
+
   if (String(grant.resource) !== IRIS_CONNECTOR_RESOURCE) {
     let migrated;
     try {
       migrated = await exchangeDelegatedToken({
-        subjectToken: String(grant.sourceAccessToken),
+        subjectToken: sourceAccessToken,
         requestedResource: IRIS_CONNECTOR_RESOURCE,
         requestedScope: String(grant.scope),
       });
     } catch (error) {
+      if (isSubjectTokenInvalidError(error) && sourceRefreshToken) {
+        const refreshedSource = await refreshSourceAccessToken(sourceRefreshToken);
+        sourceAccessToken = refreshedSource.sourceAccessToken;
+        sourceRefreshToken = refreshedSource.sourceRefreshToken || sourceRefreshToken;
+        sourceAccessExpiresAt = refreshedSource.sourceAccessExpiresAt;
+        migrated = await exchangeDelegatedToken({
+          subjectToken: sourceAccessToken,
+          requestedResource: IRIS_CONNECTOR_RESOURCE,
+          requestedScope: String(grant.scope),
+        });
+      } else {
+      if (isSubjectTokenInvalidError(error)) {
+        throw new Error("Iris authorization expired or was revoked. Please reconnect to Iris.");
+      }
       const message = error instanceof Error ? error.message.toLowerCase() : "";
       const isResourceNotFound =
         message.includes("requested resource not found") || message.includes("resource not found");
       if (!isResourceNotFound) throw error;
       migrated = null;
+      }
     }
 
     if (!migrated) {
       return {
         grantId: String(grant._id),
-        sourceAccessToken: String(grant.sourceAccessToken),
+        sourceAccessToken,
+        sourceRefreshToken,
+        sourceAccessExpiresAt,
         resource: String(grant.resource),
         scope: String(grant.scope),
         mode: grant.mode,
@@ -431,7 +499,9 @@ async function ensureDelegatedGrant(ctx: any, userId: string): Promise<Delegated
     if (preferredGrant) {
       await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
         grantId: preferredGrant._id,
-        sourceAccessToken: String(grant.sourceAccessToken),
+        sourceAccessToken,
+        sourceRefreshToken,
+        sourceAccessExpiresAt,
         delegatedAccessToken: migrated.delegatedAccessToken,
         delegatedExpiresAt,
         scope: String(grant.scope),
@@ -441,7 +511,9 @@ async function ensureDelegatedGrant(ctx: any, userId: string): Promise<Delegated
       grant = {
         ...preferredGrant,
         resource: IRIS_CONNECTOR_RESOURCE,
-        sourceAccessToken: String(grant.sourceAccessToken),
+        sourceAccessToken,
+        sourceRefreshToken,
+        sourceAccessExpiresAt,
         delegatedAccessToken: migrated.delegatedAccessToken,
         delegatedExpiresAt,
         scope: String(grant.scope),
@@ -452,7 +524,9 @@ async function ensureDelegatedGrant(ctx: any, userId: string): Promise<Delegated
         resource: IRIS_CONNECTOR_RESOURCE,
         scope: String(grant.scope),
         mode: grant.mode,
-        sourceAccessToken: String(grant.sourceAccessToken),
+        sourceAccessToken,
+        sourceRefreshToken,
+        sourceAccessExpiresAt,
         delegatedAccessToken: migrated.delegatedAccessToken,
         delegatedExpiresAt,
         createdAt: now,
@@ -469,20 +543,52 @@ async function ensureDelegatedGrant(ctx: any, userId: string): Promise<Delegated
   }
 
   let delegatedToken = String(grant.delegatedAccessToken);
+  sourceAccessToken = String(grant.sourceAccessToken);
+  sourceRefreshToken = grant.sourceRefreshToken ? String(grant.sourceRefreshToken) : sourceRefreshToken;
+  sourceAccessExpiresAt = grant.sourceAccessExpiresAt ? Number(grant.sourceAccessExpiresAt) : sourceAccessExpiresAt;
   let delegatedExpiresAt = grant.delegatedExpiresAt;
   const now = Date.now();
 
+  if (sourceAccessExpiresAt && sourceAccessExpiresAt <= now + 30_000 && sourceRefreshToken) {
+    const refreshedSource = await refreshSourceAccessToken(sourceRefreshToken);
+    sourceAccessToken = refreshedSource.sourceAccessToken;
+    sourceRefreshToken = refreshedSource.sourceRefreshToken || sourceRefreshToken;
+    sourceAccessExpiresAt = refreshedSource.sourceAccessExpiresAt;
+  }
+
   if (delegatedExpiresAt <= now + 30_000) {
-    const refreshed = await exchangeDelegatedToken({
-      subjectToken: grant.sourceAccessToken,
-      requestedResource: grant.resource,
-      requestedScope: grant.scope,
-    });
+    let refreshed;
+    try {
+      refreshed = await exchangeDelegatedToken({
+        subjectToken: sourceAccessToken,
+        requestedResource: grant.resource,
+        requestedScope: grant.scope,
+      });
+    } catch (error) {
+      if (isSubjectTokenInvalidError(error) && sourceRefreshToken) {
+        const refreshedSource = await refreshSourceAccessToken(sourceRefreshToken);
+        sourceAccessToken = refreshedSource.sourceAccessToken;
+        sourceRefreshToken = refreshedSource.sourceRefreshToken || sourceRefreshToken;
+        sourceAccessExpiresAt = refreshedSource.sourceAccessExpiresAt;
+        refreshed = await exchangeDelegatedToken({
+          subjectToken: sourceAccessToken,
+          requestedResource: grant.resource,
+          requestedScope: grant.scope,
+        });
+      } else {
+        if (isSubjectTokenInvalidError(error)) {
+          throw new Error("Iris authorization expired or was revoked. Please reconnect to Iris.");
+        }
+        throw error;
+      }
+    }
     delegatedToken = refreshed.delegatedAccessToken;
     delegatedExpiresAt = now + refreshed.delegatedExpiresIn * 1000;
     await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
       grantId: grant._id,
-      sourceAccessToken: String(grant.sourceAccessToken),
+      sourceAccessToken,
+      sourceRefreshToken,
+      sourceAccessExpiresAt,
       delegatedAccessToken: delegatedToken,
       delegatedExpiresAt,
       scope: String(grant.scope),
@@ -493,7 +599,9 @@ async function ensureDelegatedGrant(ctx: any, userId: string): Promise<Delegated
 
   return {
     grantId: String(grant._id),
-    sourceAccessToken: String(grant.sourceAccessToken),
+    sourceAccessToken,
+    sourceRefreshToken,
+    sourceAccessExpiresAt,
     resource: String(grant.resource),
     scope: String(grant.scope),
     mode: grant.mode,
@@ -505,17 +613,43 @@ async function refreshDelegatedGrant(
   ctx: any,
   grant: DelegatedGrantState,
 ): Promise<DelegatedGrantState> {
-  const refreshed = await exchangeDelegatedToken({
-    subjectToken: grant.sourceAccessToken,
-    requestedResource: grant.resource,
-    requestedScope: grant.scope,
-  });
+  let sourceAccessToken = grant.sourceAccessToken;
+  let sourceRefreshToken = grant.sourceRefreshToken;
+  let sourceAccessExpiresAt = grant.sourceAccessExpiresAt;
+
+  let refreshed;
+  try {
+    refreshed = await exchangeDelegatedToken({
+      subjectToken: sourceAccessToken,
+      requestedResource: grant.resource,
+      requestedScope: grant.scope,
+    });
+  } catch (error) {
+    if (isSubjectTokenInvalidError(error) && sourceRefreshToken) {
+      const refreshedSource = await refreshSourceAccessToken(sourceRefreshToken);
+      sourceAccessToken = refreshedSource.sourceAccessToken;
+      sourceRefreshToken = refreshedSource.sourceRefreshToken || sourceRefreshToken;
+      sourceAccessExpiresAt = refreshedSource.sourceAccessExpiresAt;
+      refreshed = await exchangeDelegatedToken({
+        subjectToken: sourceAccessToken,
+        requestedResource: grant.resource,
+        requestedScope: grant.scope,
+      });
+    } else {
+      if (isSubjectTokenInvalidError(error)) {
+        throw new Error("Iris authorization expired or was revoked. Please reconnect to Iris.");
+      }
+      throw error;
+    }
+  }
   const now = Date.now();
   const delegatedExpiresAt = now + refreshed.delegatedExpiresIn * 1000;
 
   await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
     grantId: grant.grantId as any,
-    sourceAccessToken: grant.sourceAccessToken,
+    sourceAccessToken,
+    sourceRefreshToken,
+    sourceAccessExpiresAt,
     delegatedAccessToken: refreshed.delegatedAccessToken,
     delegatedExpiresAt,
     scope: grant.scope,
@@ -525,6 +659,9 @@ async function refreshDelegatedGrant(
 
   return {
     ...grant,
+    sourceAccessToken,
+    sourceRefreshToken,
+    sourceAccessExpiresAt,
     delegatedToken: refreshed.delegatedAccessToken,
   };
 }

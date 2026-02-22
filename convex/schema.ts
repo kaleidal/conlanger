@@ -204,6 +204,8 @@ export default defineSchema({
     scope: v.string(),
     mode: v.union(v.literal("user_present"), v.literal("background")),
     sourceAccessToken: v.string(),
+    sourceRefreshToken: v.optional(v.string()),
+    sourceAccessExpiresAt: v.optional(v.number()),
     delegatedAccessToken: v.string(),
     delegatedExpiresAt: v.number(),
     createdAt: v.number(),

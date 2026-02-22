@@ -88,6 +88,51 @@ async function exchangeDelegatedToken(input: {
   };
 }
 
+function normalizeSourceTokenPayload(payload: any) {
+  const sourceAccessToken = String(payload?.access_token_jwt || payload?.access_token || "");
+  const sourceRefreshToken = payload?.refresh_token ? String(payload.refresh_token) : undefined;
+  const sourceAccessExpiresAt = payload?.expires_in
+    ? Date.now() + Number(payload.expires_in) * 1000
+    : undefined;
+
+  if (!sourceAccessToken) {
+    throw new Error("Source access token missing from Ave token response.");
+  }
+
+  return { sourceAccessToken, sourceRefreshToken, sourceAccessExpiresAt };
+}
+
+function isSubjectTokenInvalidError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("subject token is invalid") || message.includes("invalid_grant");
+}
+
+async function refreshSourceAccessToken(refreshToken: string) {
+  if (!AVE_CLIENT_SECRET) {
+    throw new Error("AVE_CLIENT_SECRET is required for source token refresh.");
+  }
+
+  const response = await fetch(AVE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grantType: "refresh_token",
+      refreshToken,
+      clientId: AVE_CLIENT_ID,
+      clientSecret: AVE_CLIENT_SECRET,
+    }),
+  });
+
+  const payload = await parseJsonSafe(response);
+  if (!response.ok) {
+    const details = payload?.error_description || payload?.error || payload?.message || "Unknown error";
+    throw new Error(`Source token refresh failed (${response.status}): ${details}`);
+  }
+
+  return normalizeSourceTokenPayload(payload);
+}
+
 function isResourceNotFoundError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
@@ -220,7 +265,10 @@ export const completeConnectorGrant = action({
       throw new Error(`Connector auth code exchange failed (${codeExchangeResponse.status}): ${details}`);
     }
 
-    const sourceAccessToken = codeExchangePayload.access_token as string;
+    const normalizedSource = normalizeSourceTokenPayload(codeExchangePayload);
+    let sourceAccessToken = normalizedSource.sourceAccessToken;
+    let sourceRefreshToken = normalizedSource.sourceRefreshToken;
+    let sourceAccessExpiresAt = normalizedSource.sourceAccessExpiresAt;
     let effectiveResource = args.resource;
     let delegated;
     try {
@@ -230,6 +278,17 @@ export const completeConnectorGrant = action({
         requestedScope: args.scope,
       });
     } catch (error) {
+      if (isSubjectTokenInvalidError(error) && sourceRefreshToken) {
+        const refreshedSource = await refreshSourceAccessToken(sourceRefreshToken);
+        sourceAccessToken = refreshedSource.sourceAccessToken;
+        sourceRefreshToken = refreshedSource.sourceRefreshToken || sourceRefreshToken;
+        sourceAccessExpiresAt = refreshedSource.sourceAccessExpiresAt;
+        delegated = await exchangeDelegatedToken({
+          subjectToken: sourceAccessToken,
+          requestedResource: effectiveResource,
+          requestedScope: args.scope,
+        });
+      } else {
       if (!isResourceNotFoundError(error) || effectiveResource === LEGACY_IRIS_CONNECTOR_RESOURCE) {
         throw error;
       }
@@ -240,6 +299,7 @@ export const completeConnectorGrant = action({
         requestedResource: effectiveResource,
         requestedScope: args.scope,
       });
+      }
     }
 
     const now = Date.now();
@@ -256,6 +316,8 @@ export const completeConnectorGrant = action({
       await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
         grantId: existing._id,
         sourceAccessToken,
+        sourceRefreshToken,
+        sourceAccessExpiresAt,
         delegatedAccessToken: delegated.delegatedAccessToken,
         delegatedExpiresAt,
         scope: normalizedScope,
@@ -271,6 +333,8 @@ export const completeConnectorGrant = action({
       scope: normalizedScope,
       mode,
       sourceAccessToken,
+      sourceRefreshToken,
+      sourceAccessExpiresAt,
       delegatedAccessToken: delegated.delegatedAccessToken,
       delegatedExpiresAt,
       createdAt: now,
@@ -288,6 +352,8 @@ export const createConnectorGrantInternal = mutation({
     scope: v.string(),
     mode: v.union(v.literal("user_present"), v.literal("background")),
     sourceAccessToken: v.string(),
+    sourceRefreshToken: v.optional(v.string()),
+    sourceAccessExpiresAt: v.optional(v.number()),
     delegatedAccessToken: v.string(),
     delegatedExpiresAt: v.number(),
     createdAt: v.number(),
@@ -302,6 +368,8 @@ export const updateConnectorGrantInternal = mutation({
   args: {
     grantId: v.id("connectorGrants"),
     sourceAccessToken: v.string(),
+    sourceRefreshToken: v.optional(v.string()),
+    sourceAccessExpiresAt: v.optional(v.number()),
     delegatedAccessToken: v.string(),
     delegatedExpiresAt: v.number(),
     scope: v.string(),
@@ -345,19 +413,47 @@ export const inferWithIris = action({
     const now = Date.now();
     let delegatedToken = grant.delegatedAccessToken;
     let sourceToken = grant.sourceAccessToken;
+    let sourceRefreshToken = grant.sourceRefreshToken as string | undefined;
+    let sourceAccessExpiresAt = grant.sourceAccessExpiresAt as number | undefined;
     let delegatedExpiresAt = grant.delegatedExpiresAt;
 
+    if (sourceAccessExpiresAt && sourceAccessExpiresAt <= now + 30_000 && sourceRefreshToken) {
+      const refreshedSource = await refreshSourceAccessToken(sourceRefreshToken);
+      sourceToken = refreshedSource.sourceAccessToken;
+      sourceRefreshToken = refreshedSource.sourceRefreshToken || sourceRefreshToken;
+      sourceAccessExpiresAt = refreshedSource.sourceAccessExpiresAt;
+    }
+
     if (delegatedExpiresAt <= now + 30_000) {
-      const refreshed = await exchangeDelegatedToken({
-        subjectToken: sourceToken,
-        requestedResource: grant.resource,
-        requestedScope: grant.scope,
-      });
+      let refreshed;
+      try {
+        refreshed = await exchangeDelegatedToken({
+          subjectToken: sourceToken,
+          requestedResource: grant.resource,
+          requestedScope: grant.scope,
+        });
+      } catch (error) {
+        if (isSubjectTokenInvalidError(error) && sourceRefreshToken) {
+          const refreshedSource = await refreshSourceAccessToken(sourceRefreshToken);
+          sourceToken = refreshedSource.sourceAccessToken;
+          sourceRefreshToken = refreshedSource.sourceRefreshToken || sourceRefreshToken;
+          sourceAccessExpiresAt = refreshedSource.sourceAccessExpiresAt;
+          refreshed = await exchangeDelegatedToken({
+            subjectToken: sourceToken,
+            requestedResource: grant.resource,
+            requestedScope: grant.scope,
+          });
+        } else {
+          throw error;
+        }
+      }
       delegatedToken = refreshed.delegatedAccessToken;
       delegatedExpiresAt = now + refreshed.delegatedExpiresIn * 1000;
       await ctx.runMutation(api.connector.updateConnectorGrantInternal, {
         grantId: grant._id,
-        sourceAccessToken: grant.sourceAccessToken,
+        sourceAccessToken: sourceToken,
+        sourceRefreshToken,
+        sourceAccessExpiresAt,
         delegatedAccessToken: delegatedToken,
         delegatedExpiresAt,
         mode: refreshed.communicationMode,

@@ -382,7 +382,7 @@
 	.language-content {
 		flex: 1;
 		min-height: 0;
-		padding: var(--space-8) var(--space-6) var(--space-12);
+		padding: var(--space-8) var(--space-6);
 		display: flex;
 		justify-content: center;
 		overflow-y: auto;
@@ -391,6 +391,8 @@
 	.language-content > :global(*) {
 		width: 100%;
 		max-width: 1200px;
+		padding-bottom: var(--space-10);
+		box-sizing: border-box;
 	}
 	
 	.assistant-sidebar {
@@ -424,7 +426,7 @@
 	}
 
 	.activity-scroll {
-		overflow-y: auto;
+		overflow: hidden;
 		min-height: 0;
 	}
 	

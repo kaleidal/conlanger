@@ -295,6 +295,15 @@
         },
       ];
       error = failureMessage;
+
+      const normalized = failureMessage.toLowerCase();
+      if (
+        normalized.includes("reconnect to iris") ||
+        normalized.includes("subject token is invalid") ||
+        normalized.includes("invalid_grant")
+      ) {
+        connectorConnected = false;
+      }
     }
 
     activeRunId = null;
@@ -534,6 +543,10 @@
     width: 100%;
     min-width: 0;
     border-left: none;
+  }
+
+  .assistant-panel.embedded .assistant-body {
+    overflow: hidden;
   }
 
   .assistant-header {
