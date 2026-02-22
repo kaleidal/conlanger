@@ -356,6 +356,7 @@
 	
 	.main {
 		flex: 1;
+		padding-bottom: var(--space-8);
 	}
 	
 	.app-footer {

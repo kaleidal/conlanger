@@ -163,49 +163,53 @@
 			{@render children()}
 		</main>
 
-		{#if showActivity || showAssistant}
-			<aside
-				class="right-toolbar"
-				class:dual-open={showActivity && showAssistant}
-				in:fly={{ x: 24, duration: 180 }}
-				out:fly={{ x: 24, duration: 150 }}
-			>
-				{#if showAssistant}
-					<section class="toolbar-panel assistant-panel-wrap">
-						<div class="sidebar-header">
-							<h2>Language Assistant</h2>
-							<button class="close-btn" onclick={() => showAssistant = false} aria-label="Close assistant panel">
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-									<line x1="18" y1="6" x2="6" y2="18"></line>
-									<line x1="6" y1="6" x2="18" y2="18"></line>
-								</svg>
-							</button>
-						</div>
-						<LanguageAssistantSidebar
-							languageId={languageId}
-							languageName={$currentLanguage?.name ?? 'Language'}
-							canWrite={canEdit}
-							embedded={true}
-						/>
-					</section>
-				{/if}
+		{#if showActivity && showAssistant}
+			<aside class="activity-sidebar split" in:fly={{ x: 24, duration: 180 }} out:fly={{ x: 24, duration: 150 }}>
+				<div class="sidebar-header">
+					<h2>Activity</h2>
+					<button class="close-btn" onclick={() => showActivity = false} aria-label="Close activity panel">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<line x1="18" y1="6" x2="6" y2="18"></line>
+							<line x1="6" y1="6" x2="18" y2="18"></line>
+						</svg>
+					</button>
+				</div>
+				<div class="activity-scroll">
+					<ActivityFeed activities={$activityLog} />
+				</div>
+			</aside>
 
-				{#if showActivity}
-					<section class="toolbar-panel activity-panel-wrap">
-						<div class="sidebar-header">
-							<h2>Activity</h2>
-							<button class="close-btn" onclick={() => showActivity = false} aria-label="Close activity panel">
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-									<line x1="18" y1="6" x2="6" y2="18"></line>
-									<line x1="6" y1="6" x2="18" y2="18"></line>
-								</svg>
-							</button>
-						</div>
-						<div class="activity-scroll">
-							<ActivityFeed activities={$activityLog} />
-						</div>
-					</section>
-				{/if}
+			<aside class="assistant-sidebar split" in:fly={{ x: 24, duration: 220 }} out:fly={{ x: 24, duration: 150 }}>
+				<LanguageAssistantSidebar
+					languageId={languageId}
+					languageName={$currentLanguage?.name ?? 'Language'}
+					canWrite={canEdit}
+					embedded={true}
+				/>
+			</aside>
+		{:else if showAssistant}
+			<aside class="assistant-sidebar" in:fly={{ x: 24, duration: 220 }} out:fly={{ x: 24, duration: 150 }}>
+				<LanguageAssistantSidebar
+					languageId={languageId}
+					languageName={$currentLanguage?.name ?? 'Language'}
+					canWrite={canEdit}
+					embedded={true}
+				/>
+			</aside>
+		{:else if showActivity}
+			<aside class="activity-sidebar" in:fly={{ x: 24, duration: 180 }} out:fly={{ x: 24, duration: 150 }}>
+				<div class="sidebar-header">
+					<h2>Activity</h2>
+					<button class="close-btn" onclick={() => showActivity = false} aria-label="Close activity panel">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<line x1="18" y1="6" x2="6" y2="18"></line>
+							<line x1="6" y1="6" x2="18" y2="18"></line>
+						</svg>
+					</button>
+				</div>
+				<div class="activity-scroll">
+					<ActivityFeed activities={$activityLog} />
+				</div>
 			</aside>
 		{/if}
 	</div>
@@ -368,7 +372,7 @@
 	.language-content {
 		flex: 1;
 		min-height: 0;
-		padding: var(--space-8) var(--space-6);
+		padding: var(--space-8) var(--space-6) var(--space-12);
 		display: flex;
 		justify-content: center;
 		overflow-y: auto;
@@ -379,7 +383,7 @@
 		max-width: 1200px;
 	}
 	
-	.right-toolbar {
+	.assistant-sidebar {
 		width: 360px;
 		border-left: 1px solid var(--color-border);
 		background: var(--color-bg-secondary);
@@ -390,23 +394,23 @@
 		min-height: 0;
 	}
 
-	.right-toolbar.dual-open {
+	.assistant-sidebar.split {
 		width: 340px;
 	}
 
-	.toolbar-panel {
+	.activity-sidebar {
+		width: 320px;
+		border-left: 1px solid var(--color-border);
+		background: var(--color-bg-secondary);
+		overflow: hidden;
+		flex-shrink: 0;
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
-		flex: 1;
 	}
 
-	.toolbar-panel + .toolbar-panel {
-		border-top: 1px solid var(--color-border);
-	}
-
-	.activity-panel-wrap {
-		max-height: 38%;
+	.activity-sidebar.split {
+		width: 300px;
 	}
 
 	.activity-scroll {
@@ -446,7 +450,8 @@
 	}
 	
 	@media (max-width: 768px) {
-		.right-toolbar {
+		.assistant-sidebar,
+		.activity-sidebar {
 			position: fixed;
 			top: 0;
 			right: 0;
