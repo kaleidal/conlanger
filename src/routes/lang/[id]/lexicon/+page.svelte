@@ -101,9 +101,7 @@
 		const inventory = new Set<string>();
 		for (const phoneme of phonemes) {
 			const symbol = phoneme.symbol?.trim().toLocaleLowerCase();
-			const ipa = phoneme.ipa?.trim().toLocaleLowerCase();
 			if (symbol) inventory.add(symbol);
-			if (ipa) inventory.add(ipa);
 		}
 		return Array.from(inventory).sort((a, b) => b.length - a.length);
 	});
@@ -127,7 +125,7 @@
 				}
 			}
 			if (!matched) {
-				return `Lemma contains symbol not in your phoneme inventory: "${remaining[0]}".`;
+				return `Lemma contains symbol not in your phonology letters: "${remaining[0]}".`;
 			}
 		}
 

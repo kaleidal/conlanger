@@ -382,7 +382,7 @@
 	.language-content {
 		flex: 1;
 		min-height: 0;
-		padding: var(--space-8) var(--space-6);
+		padding: var(--space-8) var(--space-6) 0;
 		display: flex;
 		justify-content: center;
 		overflow-y: auto;
@@ -391,7 +391,6 @@
 	.language-content > :global(*) {
 		width: 100%;
 		max-width: 1200px;
-		padding-bottom: var(--space-10);
 		box-sizing: border-box;
 	}
 	
