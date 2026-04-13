@@ -1,57 +1,45 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { clearAveOAuthState, handleAveCallback, isAveCallback } from '$lib/auth/ave';
-	import { auth, runAction, runMutation } from '$lib/convex';
+	import { finishPkceLogin } from '@ave-id/sdk/client';
+	import { AVE_CLIENT_ID } from '$lib/auth/ave';
+	import { auth, runMutation } from '$lib/convex';
 
 	let error = $state('');
 	let loading = $state(true);
 
-	interface AveExchangeResult {
-		id: string;
-		handle: string;
-		displayName: string;
-		email: string | null;
-		avatarUrl: string | null;
-		accessToken: string;
-	}
-
 	onMount(async () => {
-		if (!isAveCallback()) {
+		const redirectUri = `${window.location.origin}/callback`;
+		const params = new URLSearchParams(window.location.search);
+		if (!params.has('code')) {
 			goto('/');
 			return;
 		}
 
 		try {
-			const redirectUri = `${window.location.origin}/callback`;
-			const callbackPayload = await handleAveCallback();
+			const tokens = await finishPkceLogin({
+				clientId: AVE_CLIENT_ID,
+				redirectUri
+			});
 
-			if (!callbackPayload) {
-				clearAveOAuthState();
+			if (!tokens?.user?.id) {
 				error = 'Authentication failed. Please try again.';
 				loading = false;
 				return;
 			}
 
-			const aveUser = await runAction<AveExchangeResult>('auth:exchangeAveCode', {
-				code: callbackPayload.code,
-				codeVerifier: callbackPayload.codeVerifier,
-				redirectUri
-			});
-			clearAveOAuthState();
+			const u = tokens.user;
 
-			// Create or update user in Convex
 			const userId = await runMutation<string>('auth:upsertUser', {
-				aveId: aveUser.id,
-				handle: aveUser.handle,
-				displayName: aveUser.displayName,
-				email: aveUser.email,
-				avatarUrl: aveUser.avatarUrl
+				aveId: u.id,
+				handle: u.handle,
+				displayName: u.displayName,
+				email: u.email,
+				avatarUrl: u.avatarUrl
 			});
 
-			// Create session
 			const token = crypto.randomUUID();
-			const expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
+			const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
 
 			await runMutation('auth:createSession', {
 				userId,
@@ -59,21 +47,21 @@
 				expiresAt
 			});
 
-			// Set auth state
-			auth.setUser({
-				_id: userId,
-				aveId: aveUser.id,
-				handle: aveUser.handle,
-				displayName: aveUser.displayName,
-				email: aveUser.email ?? undefined,
-				avatarUrl: aveUser.avatarUrl ?? undefined
-			}, token);
+			auth.setUser(
+				{
+					_id: userId,
+					aveId: u.id,
+					handle: u.handle,
+					displayName: u.displayName,
+					email: u.email ?? undefined,
+					avatarUrl: u.avatarUrl ?? undefined
+				},
+				token
+			);
 
-			// Redirect to dashboard
 			goto('/languages');
 		} catch (e) {
 			console.error('Callback error:', e);
-			clearAveOAuthState();
 			error = 'An error occurred during authentication.';
 			loading = false;
 		}
@@ -106,11 +94,11 @@
 		align-items: center;
 		justify-content: center;
 	}
-	
+
 	.loading {
 		text-align: center;
 	}
-	
+
 	.spinner {
 		width: 40px;
 		height: 40px;
@@ -120,30 +108,32 @@
 		animation: spin 1s linear infinite;
 		margin: 0 auto var(--space-4);
 	}
-	
+
 	@keyframes spin {
-		to { transform: rotate(360deg); }
+		to {
+			transform: rotate(360deg);
+		}
 	}
-	
+
 	.loading p {
 		color: var(--color-text-secondary);
 	}
-	
+
 	.error {
 		text-align: center;
 		padding: var(--space-8);
 	}
-	
+
 	.error h2 {
 		margin-bottom: var(--space-4);
 		color: var(--color-error);
 	}
-	
+
 	.error p {
 		margin-bottom: var(--space-6);
 		color: var(--color-text-secondary);
 	}
-	
+
 	.error a {
 		color: var(--color-accent);
 	}

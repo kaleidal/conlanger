@@ -108,7 +108,7 @@
 				</div>
 			{:else}
 				<button class="login-button" onclick={login}>
-					Sign in with Ave
+					Sign in
 				</button>
 			{/if}
 		</div>
