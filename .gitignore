@@ -31,3 +31,8 @@ npm-debug.log*
 dist
 
 .vercel
+
+# Wrangler
+.wrangler
+.dev.vars*
+!.dev.vars.example
